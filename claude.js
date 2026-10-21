@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { httpError } from './errors.js';
 
 // USD per million [input, output] tokens, https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-21).
 // Thinking is billed as output. Haiku 5.5's rate is for prompts up to 100K tokens; ours are ~1-3K.
@@ -16,8 +17,6 @@ const UNKNOWN_PRICE = [15, 75];
 export const EFFORTS_WITHOUT_THINKING = ['low', 'medium', 'high'];
 export const BUDGET_TOKENS = [1024, 4096, 16384, 32768];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-// Room for the prompt when turning the remaining budget into a max_tokens cap.
-const INPUT_TOKENS_RESERVE = 4000;
 const MIN_OUTPUT_TOKENS = 2048;
 
 const SYSTEM =
@@ -36,7 +35,9 @@ const priceKey = (id) => id.replace(/-\d{8}$/, '');
 async function latestPerTier() {
   const newest = new Map();
   for await (const m of client.models.list()) {
-    const tier = m.id.match(/^claude-([a-z]+)-/)?.[1] ?? m.id;
+    // Skips legacy ids such as claude-3-5-haiku-*, whose names don't follow claude-<tier>-<version>.
+    const tier = m.id.match(/^claude-([a-z]+)-\d/)?.[1];
+    if (!tier) continue;
     if (!newest.has(tier) || m.created_at > newest.get(tier).created_at) newest.set(tier, m);
   }
   return [...newest.values()];
@@ -47,8 +48,15 @@ async function latestPerTier() {
 export function listEngines() {
   enginesPromise ??= (async () => {
     client ??= new Anthropic();
+    let models;
+    try {
+      models = await latestPerTier();
+    } catch (err) {
+      if (!(err instanceof Anthropic.APIError)) throw err;
+      throw httpError(502, `Could not list Anthropic models: ${err.message}`);
+    }
     const engines = [];
-    for (const m of await latestPerTier()) {
+    for (const m of models) {
       const caps = m.capabilities ?? {};
       const types = caps.thinking?.types ?? {};
       const has = (t) => types[t]?.supported === true;
@@ -67,7 +75,7 @@ export function listEngines() {
         defaultEffort: efforts.includes('medium') ? 'medium' : (efforts.at(-1) ?? null),
         // Not sent to the browser.
         offType: has('between_tools') ? 'between_tools' : 'disabled',
-        maxTokens: m.max_tokens,
+        maxTokens: m.max_tokens ?? 32_000,
       });
     }
     return engines;
@@ -81,7 +89,7 @@ export function listEngines() {
 
 export const publicEngine = ({ offType, maxTokens, ...engine }) => engine;
 
-const invalid = (message) => Object.assign(new Error(message), { status: 400 });
+const invalid = (message) => httpError(400, message);
 
 // Validates a player config against what the model supports; returns the normalized config.
 export function parsePlayer(engine, { thinking, effort = null, budgetTokens = null, fast = false }) {
@@ -122,16 +130,16 @@ function thinkingParam(engine, { thinking, budgetTokens }) {
 // Returns { san, thinking, model, costUsd } for the side to move. `maxUsd` caps what this one call may cost.
 export async function chooseMove(chess, engine, player, maxUsd) {
   const [usdIn, usdOut] = (player.fast ? engine.fastPrice : engine.price).map((p) => p / 1e6);
-  const affordable = Math.floor((maxUsd - INPUT_TOKENS_RESERVE * usdIn) / usdOut);
-  const maxTokens = Math.min(engine.maxTokens, affordable);
-  const minTokens = (player.budgetTokens ?? 0) + MIN_OUTPUT_TOKENS;
-  if (maxTokens < minTokens) {
-    throw Object.assign(new Error(`Remaining budget ($${maxUsd.toFixed(4)}) is too small for ${engine.label} with these settings`), {
-      status: 402,
-    });
+  const legal = chess.moves();
+  const content = prompt(chess);
+  // Generous input estimate (~3 chars per token, plus the schema repeating the legal moves) so the
+  // max_tokens cap below keeps the whole call within the remaining budget.
+  const inputTokens = Math.ceil((SYSTEM.length + content.length) / 3) + 4 * legal.length + 500;
+  const maxTokens = Math.min(engine.maxTokens, Math.floor((maxUsd - inputTokens * usdIn) / usdOut));
+  if (maxTokens < (player.budgetTokens ?? 0) + MIN_OUTPUT_TOKENS) {
+    throw httpError(402, `Remaining budget ($${maxUsd.toFixed(4)}) is too small for ${engine.label} with these settings`);
   }
 
-  const legal = chess.moves();
   const params = {
     model: engine.id,
     max_tokens: maxTokens,
@@ -150,17 +158,23 @@ export async function chooseMove(chess, engine, player, maxUsd) {
         },
       },
     },
-    messages: [{ role: 'user', content: prompt(chess) }],
+    messages: [{ role: 'user', content }],
   };
   client ??= new Anthropic();
   const stream = player.fast
     ? client.beta.messages.stream({ ...params, speed: 'fast', betas: ['fast-mode-2026-02-01'] })
     : client.messages.stream(params);
-  const message = await stream.finalMessage();
+  let message;
+  try {
+    message = await stream.finalMessage();
+  } catch (err) {
+    if (!(err instanceof Anthropic.APIError)) throw err;
+    throw httpError(502, `Anthropic API error: ${err.message}`);
+  }
 
   const { usage } = message;
   const costUsd = usage.input_tokens * usdIn + usage.output_tokens * usdOut;
-  const fail = (msg) => Object.assign(new Error(msg), { status: 502, costUsd });
+  const fail = (msg) => httpError(502, msg, { costUsd });
   if (message.stop_reason === 'refusal') {
     throw fail(`${engine.label} declined to move (${message.stop_details?.category ?? 'no category'})`);
   }

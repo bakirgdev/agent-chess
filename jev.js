@@ -3,6 +3,8 @@
 // facts (captures, safety, checks, mate threats) that it would otherwise have to calculate.
 // Docs: https://docs.typesafe.ai/api/system-one.md, https://docs.typesafe.ai/primitives/choice.md
 
+import { httpError } from './errors.js';
+
 const API_URL = 'https://api.typesafe.ai/v1/systemone';
 export const MODEL = process.env.JEV_MODEL ?? 'jev-latest';
 const API_KEY = process.env.TYPESAFE_API_KEY;
@@ -121,7 +123,7 @@ function shuffle(items) {
   return a;
 }
 
-function buildRequest(chess) {
+export function buildRequest(chess) {
   const us = chess.turn();
   const side = SIDES[us];
   const seenPositions = new Set(chess.history({ verbose: true }).map((m) => positionKey(m.before)));
@@ -154,25 +156,38 @@ function buildRequest(chess) {
 
 async function post(body) {
   for (let attempt = 1; ; attempt++) {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (res.ok) return res.json();
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      throw httpError(502, `Jev API unreachable: ${err.message}`);
+    }
     const text = await res.text();
+    if (res.ok) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw httpError(502, `Jev API returned invalid JSON: ${text.slice(0, 200)}`);
+      }
+    }
     if ((res.status === 429 || res.status === 529) && attempt < 3) {
-      await new Promise((r) => setTimeout(r, Number(res.headers.get('retry-after') ?? attempt) * 1000));
+      // retry-after may also be an HTTP date; fall back to a linear backoff then.
+      const seconds = Number(res.headers.get('retry-after')) || attempt;
+      await new Promise((r) => setTimeout(r, seconds * 1000));
       continue;
     }
-    throw Object.assign(new Error(`Jev API ${res.status}: ${text.slice(0, 300)}`), { status: 502 });
+    throw httpError(502, `Jev API ${res.status}: ${text.slice(0, 300)}`);
   }
 }
 
 // Returns { san, confidence, candidates: [{ san, p }], model, costUsd } for the side to move.
 export async function chooseMove(chess) {
-  if (!API_KEY) throw Object.assign(new Error('TYPESAFE_API_KEY is not set (put it in .env)'), { status: 500 });
+  if (!API_KEY) throw httpError(500, 'TYPESAFE_API_KEY is not set (put it in .env)');
   const body = buildRequest(chess);
   const data = await post(body);
   const inputTokens = data.usage?.input_tokens ?? 0;
@@ -180,11 +195,8 @@ export async function chooseMove(chess) {
 
   const answer = data.answers?.move;
   // Model output is untrusted: only accept a move that is one of the options we sent.
-  if (!answer || !(answer.choice in body.questions.move.criteria)) {
-    throw Object.assign(new Error(`Jev returned an unusable answer: ${JSON.stringify(answer)?.slice(0, 200)}`), {
-      status: 502,
-      costUsd,
-    });
+  if (typeof answer?.choice !== 'string' || !Object.hasOwn(body.questions.move.criteria, answer.choice)) {
+    throw httpError(502, `Jev returned an unusable answer: ${JSON.stringify(answer)?.slice(0, 200)}`, { costUsd });
   }
   const candidates = Object.entries(answer.probabilities ?? {})
     .map(([san, p]) => ({ san, p }))

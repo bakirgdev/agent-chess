@@ -17,20 +17,21 @@ const FALLBACK_CONFIG = {
   budgetTokensOptions: [1024, 4096, 16384, 32768],
   budgetUsd: null, spentUsd: 0,
 };
-const STORE_KEY = 'jev.players.v2';
+const STORE_KEY = 'agent-chess.players.v1';
 let config = FALLBACK_CONFIG;
 let players = { w: null, b: null };
 const sideModel = { w: null, b: null }; // last model id reported per side, with the engine that reported it
 
 let chess, state, flipped = false, gen = 0, loopGen = null, controller = null;
 let spent = 0;
-let moveLog, totals, thinkingSince, tick, lastThink, lastResult, resultDismissed;
+let moveLog, totals, thinkingSince, tick, lastThink, lastResult;
 let squareEls = new Map();
 let pieceEls = new Map();
 let piecesLayer;
 
 function resetGame() {
   gen++;
+  // The server still finishes and bills an aborted move; the next move's response carries the updated spend.
   if (controller) controller.abort();
   controller = null;
   clearInterval(tick);
@@ -41,7 +42,6 @@ function resetGame() {
   thinkingSince = null;
   lastThink = null;
   lastResult = null;
-  resultDismissed = false;
   el.result.hidden = true;
   hideBanner();
   buildBoard();
@@ -125,14 +125,20 @@ function animateMove(m) {
   updateHighlights();
 }
 
+/* ---------- config ---------- */
+async function fetchConfig() {
+  const c = await (await fetch('/api/config')).json();
+  if (!c || !Array.isArray(c.engines) || !c.engines.length) throw new Error('Malformed /api/config');
+  return c;
+}
+
 /* ---------- players ---------- */
 const engineOf = (id) => config.engines.find((e) => e.id === id) || config.engines[0];
-const modesOf = (e) => (e.anthropic && Array.isArray(e.thinking) ? e.thinking : []);
-const effortsOf = (e) => (e.anthropic && Array.isArray(e.efforts) ? e.efforts : []);
+const modesOf = (e) => e.thinking ?? [];
+const effortsOf = (e) => e.efforts ?? [];
 const cap = (t) => t[0].toUpperCase() + t.slice(1);
 const fmtTok = (n) => `${Math.round(n / 1024)}K`;
 const fmtPrice = (p) => `$${Number(p[0])}/$${Number(p[1])}`;
-const budgetOptions = () => (Array.isArray(config.budgetTokensOptions) && config.budgetTokensOptions.length ? config.budgetTokensOptions : [1024, 4096, 16384, 32768]);
 function allowedEfforts(e, thinking) {
   const all = effortsOf(e);
   return thinking === 'off' ? all.filter((f) => (config.effortsWithoutThinking || []).includes(f)) : all;
@@ -143,26 +149,18 @@ function clampEffort(p) {
   else if (a.length && !a.includes(p.effort)) p.effort = a.at(-1);
   return p;
 }
-function defaultPlayer(e) {
-  const modes = modesOf(e), efforts = effortsOf(e), bo = budgetOptions();
-  return clampEffort({
-    engine: e.id,
-    thinking: modes.length ? (modes.includes(e.defaultThinking) ? e.defaultThinking : modes[0]) : null,
-    effort: efforts.length ? (efforts.includes(e.defaultEffort) ? e.defaultEffort : efforts[0]) : null,
-    budget: bo.includes(4096) ? 4096 : bo[0],
-    fast: false,
-  });
-}
+// Unknown engine falls back to the first one's defaults; unsupported saved values fall back to that engine's defaults.
 function normalizePlayer(raw) {
-  const e = raw && config.engines.find((x) => x.id === raw.engine);
-  if (!e) return defaultPlayer(config.engines[0]);
-  const d = defaultPlayer(e);
+  const e = config.engines.find((x) => x.id === raw?.engine) ?? config.engines[0];
+  const r = e.id === raw?.engine ? raw : {};
+  const modes = modesOf(e), efforts = effortsOf(e), bo = config.budgetTokensOptions;
+  const pick = (list, v, d) => (list.includes(v) ? v : d);
   return clampEffort({
     engine: e.id,
-    thinking: modesOf(e).includes(raw.thinking) ? raw.thinking : d.thinking,
-    effort: effortsOf(e).includes(raw.effort) ? raw.effort : d.effort,
-    budget: budgetOptions().includes(raw.budget) ? raw.budget : d.budget,
-    fast: e.fast === true && raw.fast === true,
+    thinking: pick(modes, r.thinking, pick(modes, e.defaultThinking, modes[0] ?? null)),
+    effort: pick(efforts, r.effort, pick(efforts, e.defaultEffort, efforts[0] ?? null)),
+    budget: pick(bo, r.budget, bo.includes(4096) ? 4096 : bo[0]),
+    fast: e.fast === true && r.fast === true,
   });
 }
 function loadPlayers() {
@@ -195,7 +193,7 @@ function playerDesc(color) {
 function renderTitle() {
   const t = `${engineOf(players.w.engine).label} vs ${engineOf(players.b.engine).label}`;
   $('title').textContent = t;
-  document.title = t;
+  document.title = `Agent Chess: ${t}`;
 }
 function renderPlayers() {
   for (const c of ['w', 'b']) {
@@ -233,7 +231,7 @@ function renderPlayers() {
   renderTitle();
 }
 function initPlayers() {
-  const mk = (e) => new Option(e.anthropic ? `${e.label} · ${e.price ? fmtPrice(e.price) : ''}`.replace(/ · $/, '') : e.label, e.id);
+  const mk = (e) => new Option(e.anthropic ? `${e.label} · ${fmtPrice(e.price)}` : e.label, e.id);
   for (const c of ['w', 'b']) {
     const sel = $(`eng-${c}`);
     const groups = [['TypeSafe', config.engines.filter((e) => !e.anthropic)], ['Anthropic', config.engines.filter((e) => e.anthropic)]];
@@ -243,7 +241,7 @@ function initPlayers() {
       g.append(...l.map(mk));
       return g;
     }));
-    $(`bud-${c}`).replaceChildren(...budgetOptions().map((n) => new Option(fmtTok(n), String(n))));
+    $(`bud-${c}`).replaceChildren(...config.budgetTokensOptions.map((n) => new Option(fmtTok(n), String(n))));
   }
   loadPlayers();
   renderPlayers();
@@ -251,7 +249,7 @@ function initPlayers() {
 function wirePlayers() {
   for (const c of ['w', 'b']) {
     $(`eng-${c}`).addEventListener('change', (ev) => {
-      players[c] = defaultPlayer(engineOf(ev.target.value));
+      players[c] = normalizePlayer({ engine: ev.target.value });
       playersChanged();
     });
     $(`think-${c}`).addEventListener('change', (ev) => {
@@ -325,12 +323,11 @@ function renderThink() {
   if (!lastThink) { el.think.innerHTML = '<p class="muted">No decision yet.</p>'; return; }
   const { san, candidates, thinking } = lastThink;
   if (candidates.length) {
-    el.think.innerHTML = candidates.slice(0, 5).map((c) => {
-      const pct = Math.max(0, Math.min(100, c.p * 100));
-      return `<div class="cand${c.san === san ? ' pick' : ''}"><span class="san">${esc(c.san)}</span>
-      <span class="track"><span class="fill" style="display:block;width:${pct}%"></span></span>
-      <span class="pct">${pct < 10 ? pct.toFixed(1) : Math.round(pct)}%</span></div>`;
-    }).join('');
+    const shown = candidates.slice(0, 5).map((c) => ({ san: c.san, pct: Math.max(0, Math.min(100, c.p * 100)) }));
+    el.think.innerHTML = shown.map((c) => `<div class="cand${c.san === san ? ' pick' : ''}"><span class="san">${esc(c.san)}</span>
+      <span class="track"><span class="fill"></span></span>
+      <span class="pct">${c.pct < 10 ? c.pct.toFixed(1) : Math.round(c.pct)}%</span></div>`).join('');
+    el.think.querySelectorAll('.fill').forEach((f, i) => { f.style.width = `${shown[i].pct}%`; });
   } else if (thinking) {
     el.think.innerHTML = `<div class="think-text" tabindex="0" role="region" aria-label="${esc(title)}">${esc(thinking)}</div>`;
   } else {
@@ -347,6 +344,7 @@ function renderStatus() {
   const s = el.status;
   if (state === 'idle') s.textContent = 'Press Start to begin';
   else if (state === 'over') s.textContent = lastResult ? `${lastResult.title} · ${lastResult.reason}` : 'Game over';
+  else if (thinkingSince && state === 'paused') s.textContent = `Pausing after ${sideName(chess.turn())}'s move\u2026`;
   else if (thinkingSince) s.textContent = `${sideName(chess.turn())} is thinking\u2026`;
   else if (state === 'paused') s.textContent = 'Paused';
   else s.textContent = `${sideName(chess.turn())} to move`;
@@ -393,7 +391,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function startClockTick() {
   clearInterval(tick);
-  tick = setInterval(() => { renderBars(); }, 100);
+  tick = setInterval(() => {
+    const clock = document.querySelector('.player-bar.active .clock');
+    if (clock && thinkingSince) clock.textContent = fmtClock(totals[chess.turn()] + performance.now() - thinkingSince);
+  }, 100);
 }
 
 async function requestMove(color, signal) {
@@ -416,16 +417,17 @@ async function loop() {
   const myGen = gen;
   if (loopGen === myGen) return;
   loopGen = myGen;
+  let mine = null;
   try {
     while (state === 'running' && gen === myGen) {
       const color = chess.turn();
-      controller = new AbortController();
+      mine = controller = new AbortController();
       thinkingSince = performance.now();
       startClockTick();
       renderAll();
       let r;
       try {
-        r = await requestMove(color, controller.signal);
+        r = await requestMove(color, mine.signal);
       } catch (e) {
         if (gen !== myGen || e.name === 'AbortError') return;
         thinkingSince = null;
@@ -475,7 +477,7 @@ async function loop() {
     }
   } finally {
     if (loopGen === myGen) loopGen = null;
-    controller = null;
+    if (controller === mine) controller = null;
     if (gen === myGen && state === 'paused') renderAll();
   }
 }
@@ -493,19 +495,20 @@ function onPrimary() {
 }
 
 function buildPgn() {
-  const c = new Chess();
-  for (const san of chess.history()) c.move(san);
   const d = new Date();
   const date = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
   const result = lastResult ? lastResult.score.replace('½-½', '1/2-1/2') : '*';
-  c.setHeader('Event', `${engineOf(players.w.engine).label} vs ${engineOf(players.b.engine).label}`);
-  c.setHeader('Site', 'Local');
-  c.setHeader('Date', date);
-  c.setHeader('White', playerDesc('w'));
-  c.setHeader('Black', playerDesc('b'));
-  c.setHeader('Result', result);
-  return c.pgn();
+  // Headers live on the game object only until the next reset; nothing else reads them.
+  chess.setHeader('Event', 'Agent Chess');
+  chess.setHeader('Site', 'https://github.com/bakirgdev/agent-chess');
+  chess.setHeader('Date', date);
+  chess.setHeader('White', playerDesc('w'));
+  chess.setHeader('Black', playerDesc('b'));
+  chess.setHeader('Result', result);
+  return chess.pgn();
 }
+const PGN_LABEL = 'Copy PGN';
+let pgnTimer;
 async function copyPgn() {
   const text = buildPgn();
   try {
@@ -513,16 +516,17 @@ async function copyPgn() {
   } catch {
     const ta = document.createElement('textarea');
     ta.value = text;
-    ta.style.cssText = 'position:fixed;opacity:0';
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
     const ok = document.execCommand('copy');
     ta.remove();
     if (!ok) { showBanner('Could not copy PGN to the clipboard'); return; }
   }
-  const prev = el.pgn.textContent;
   el.pgn.textContent = 'Copied!';
-  setTimeout(() => { el.pgn.textContent = prev; }, 1200);
+  clearTimeout(pgnTimer);
+  pgnTimer = setTimeout(() => { el.pgn.textContent = PGN_LABEL; }, 1200);
 }
 
 /* ---------- wiring ---------- */
@@ -536,7 +540,7 @@ $('btn-flip').addEventListener('click', () => {
 });
 el.pgn.addEventListener('click', copyPgn);
 $('banner-close').addEventListener('click', hideBanner);
-$('result-close').addEventListener('click', () => { el.result.hidden = true; resultDismissed = true; });
+$('result-close').addEventListener('click', () => { el.result.hidden = true; });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { el.result.hidden = true; hideBanner(); }
 });
@@ -545,8 +549,7 @@ players = { w: normalizePlayer(null), b: normalizePlayer(null) };
 wirePlayers();
 initPlayers();
 resetGame();
-fetch('/api/config').then((r) => r.json()).then((c) => {
-  if (!c || !Array.isArray(c.engines) || !c.engines.length) throw new Error('Malformed /api/config');
+fetchConfig().then((c) => {
   config = { ...FALLBACK_CONFIG, ...c };
   if (Number.isFinite(c.spentUsd)) spent = c.spentUsd;
   initPlayers();

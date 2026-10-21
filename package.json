@@ -1,9 +1,20 @@
 {
-  "name": "jev-chess",
+  "name": "agent-chess",
+  "version": "1.0.0",
+  "description": "AI vs AI chess on a chess.com-style board: Claude models and TypeSafe Jev play each other",
+  "license": "MIT",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bakirgdev/agent-chess.git"
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
   "scripts": {
-    "start": "node --env-file=.env server.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.137.0",

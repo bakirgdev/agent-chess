@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jev vs Jev</title>
+<title>Agent Chess</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/pieces.css">
 <link rel="stylesheet" href="/style.css">
@@ -33,7 +33,7 @@
 
   <aside class="side" aria-label="Game panel">
     <header class="side-head">
-      <h1 id="title">Jev vs Jev</h1>
+      <h1 id="title">Agent Chess</h1>
       <p id="status" class="status" aria-live="polite">Press Start to begin</p>
     </header>
     <div id="moves" class="moves" tabindex="0" aria-label="Move list"></div>
@@ -48,7 +48,7 @@
         <select id="eng-w" class="eng" aria-label="White engine"></select>
         <div class="opts" id="opts-w" hidden>
           <label class="fld" id="fth-w">Thinking <select id="think-w" aria-label="White thinking mode"></select></label>
-          <span class="fld static" id="thst-w"></span>
+          <span class="fld" id="thst-w"></span>
           <label class="fld" id="fbud-w">Budget <select id="bud-w" aria-label="White thinking budget tokens"></select></label>
           <label class="fld" id="feff-w">Effort <select id="eff-w" aria-label="White effort"></select></label>
           <label class="sw" id="ffast-w"><input type="checkbox" role="switch" id="fast-w"><span class="slider" aria-hidden="true"></span><span>Fast mode</span></label>
@@ -59,7 +59,7 @@
         <select id="eng-b" class="eng" aria-label="Black engine"></select>
         <div class="opts" id="opts-b" hidden>
           <label class="fld" id="fth-b">Thinking <select id="think-b" aria-label="Black thinking mode"></select></label>
-          <span class="fld static" id="thst-b"></span>
+          <span class="fld" id="thst-b"></span>
           <label class="fld" id="fbud-b">Budget <select id="bud-b" aria-label="Black thinking budget tokens"></select></label>
           <label class="fld" id="feff-b">Effort <select id="eff-b" aria-label="Black effort"></select></label>
           <label class="sw" id="ffast-b"><input type="checkbox" role="switch" id="fast-b"><span class="slider" aria-hidden="true"></span><span>Fast mode</span></label>

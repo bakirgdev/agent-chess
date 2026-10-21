@@ -141,7 +141,7 @@ button, select { font: inherit; color: inherit; }
 .cand { display: grid; grid-template-columns: 52px 1fr 46px; align-items: center; gap: 8px; font-size: 13px; }
 .cand .san { font-weight: 800; }
 .cand .track { height: 14px; background: #1f1e1c; border-radius: 3px; overflow: hidden; }
-.cand .fill { height: 100%; background: var(--green); border-radius: 3px; min-width: 2px; transition: width .25s; }
+.cand .fill { display: block; height: 100%; background: var(--green); border-radius: 3px; min-width: 2px; transition: width .25s; }
 .cand .pct { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 .cand.pick .san { color: var(--green); }
 .stats { margin: 0; padding: 4px 16px 10px; color: var(--muted); font-size: 13px; }
