@@ -1,0 +1,12 @@
+{
+  "name": "jev-chess",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0",
+    "chess.js": "^1.4.0"
+  }
+}

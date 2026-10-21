@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev vs Jev</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/pieces.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="banner" class="banner" role="alert" hidden>
+  <span id="banner-text"></span>
+  <button id="banner-close" type="button" aria-label="Dismiss error">&times;</button>
+</div>
+<main class="app">
+  <section class="board-col" aria-label="Game board">
+    <div class="player-bar" id="bar-top"></div>
+    <div class="board-wrap">
+      <div id="board" class="board" role="group" aria-label="Chess board"></div>
+      <div id="result" class="result" hidden role="dialog" aria-labelledby="result-title">
+        <div class="result-card">
+          <button id="result-close" class="result-x" type="button" aria-label="Dismiss result">&times;</button>
+          <div class="result-title" id="result-title"></div>
+          <div class="result-reason" id="result-reason"></div>
+          <div class="result-score" id="result-score"></div>
+          <button id="result-new" class="btn btn-primary" type="button">New game</button>
+        </div>
+      </div>
+    </div>
+    <div class="player-bar" id="bar-bottom"></div>
+  </section>
+
+  <aside class="side" aria-label="Game panel">
+    <header class="side-head">
+      <h1 id="title">Jev vs Jev</h1>
+      <p id="status" class="status" aria-live="polite">Press Start to begin</p>
+    </header>
+    <div id="moves" class="moves" tabindex="0" aria-label="Move list"></div>
+    <section class="think" id="think" aria-label="Thinking">
+      <h2 id="think-title">Thinking</h2>
+      <div id="think-body" class="think-body"><p class="muted">No decision yet.</p></div>
+    </section>
+    <p id="stats" class="stats"></p>
+    <section class="players" aria-label="Players">
+      <div class="prow" id="prow-w">
+        <span class="who"><span class="swatch w" aria-hidden="true"></span>White</span>
+        <select id="eng-w" class="eng" aria-label="White engine"></select>
+        <div class="opts" id="opts-w" hidden>
+          <label class="fld" id="fth-w">Thinking <select id="think-w" aria-label="White thinking mode"></select></label>
+          <span class="fld static" id="thst-w"></span>
+          <label class="fld" id="fbud-w">Budget <select id="bud-w" aria-label="White thinking budget tokens"></select></label>
+          <label class="fld" id="feff-w">Effort <select id="eff-w" aria-label="White effort"></select></label>
+          <label class="sw" id="ffast-w"><input type="checkbox" role="switch" id="fast-w"><span class="slider" aria-hidden="true"></span><span>Fast mode</span></label>
+        </div>
+      </div>
+      <div class="prow" id="prow-b">
+        <span class="who"><span class="swatch b" aria-hidden="true"></span>Black</span>
+        <select id="eng-b" class="eng" aria-label="Black engine"></select>
+        <div class="opts" id="opts-b" hidden>
+          <label class="fld" id="fth-b">Thinking <select id="think-b" aria-label="Black thinking mode"></select></label>
+          <span class="fld static" id="thst-b"></span>
+          <label class="fld" id="fbud-b">Budget <select id="bud-b" aria-label="Black thinking budget tokens"></select></label>
+          <label class="fld" id="feff-b">Effort <select id="eff-b" aria-label="Black effort"></select></label>
+          <label class="sw" id="ffast-b"><input type="checkbox" role="switch" id="fast-b"><span class="slider" aria-hidden="true"></span><span>Fast mode</span></label>
+        </div>
+      </div>
+      <p class="pnote" id="pnote" hidden></p>
+    </section>
+    <div class="controls">
+      <button id="btn-primary" class="btn btn-primary" type="button">Start</button>
+      <div class="row">
+        <button id="btn-new" class="btn btn-secondary" type="button">New game</button>
+        <button id="btn-flip" class="btn btn-secondary" type="button" aria-label="Flip board">Flip board</button>
+        <button id="btn-pgn" class="btn btn-secondary" type="button">Copy PGN</button>
+      </div>
+      <label class="delay">Move delay
+        <select id="delay" aria-label="Delay between moves">
+          <option value="0">0s</option>
+          <option value="500">0.5s</option>
+          <option value="1000" selected>1s</option>
+          <option value="2000">2s</option>
+        </select>
+      </label>
+    </div>
+  </aside>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
