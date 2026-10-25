@@ -35,6 +35,9 @@
     <header class="side-head">
       <h1 id="title">Agent Chess</h1>
       <p id="status" class="status" aria-live="polite">Press Start to begin</p>
+      <form id="san-form" class="san-form" hidden>
+        <input id="san-input" autocomplete="off" spellcheck="false" aria-label="Your move in algebraic notation" placeholder="Or type a move, e.g. Nf3, and press Enter">
+      </form>
     </header>
     <div id="moves" class="moves" tabindex="0" role="region" aria-label="Move list"></div>
     <section class="think" id="think" aria-label="Thinking">
@@ -71,20 +74,36 @@
       <button id="btn-primary" class="btn btn-primary" type="button">Start</button>
       <div class="row">
         <button id="btn-new" class="btn btn-secondary" type="button">New game</button>
+        <button id="btn-load" class="btn btn-secondary" type="button">Load FEN/PGN</button>
         <button id="btn-flip" class="btn btn-secondary" type="button" aria-label="Flip board">Flip board</button>
         <button id="btn-pgn" class="btn btn-secondary" type="button">Copy PGN</button>
       </div>
-      <label class="delay">Move delay
-        <select id="delay" aria-label="Delay between moves">
-          <option value="0">0s</option>
-          <option value="500">0.5s</option>
-          <option value="1000" selected>1s</option>
-          <option value="2000">2s</option>
-        </select>
-      </label>
+      <div class="prefs">
+        <label class="sw"><input type="checkbox" role="switch" id="sound" checked><span class="slider" aria-hidden="true"></span><span>Sound</span></label>
+        <label class="delay">Move delay
+          <select id="delay" aria-label="Delay between moves">
+            <option value="0">0s</option>
+            <option value="500">0.5s</option>
+            <option value="1000" selected>1s</option>
+            <option value="2000">2s</option>
+          </select>
+        </label>
+      </div>
     </div>
   </aside>
 </main>
+<dialog id="load-dialog" class="load" aria-labelledby="load-title">
+  <form id="load-form">
+    <h2 id="load-title">Load a position</h2>
+    <p class="muted">Paste a FEN or a PGN. The game continues from its last position.</p>
+    <textarea id="load-text" rows="7" spellcheck="false" aria-label="FEN or PGN"></textarea>
+    <p id="load-error" class="load-error" role="alert"></p>
+    <div class="load-actions">
+      <button id="load-cancel" class="btn btn-secondary" type="button">Cancel</button>
+      <button class="btn btn-primary" type="submit">Load</button>
+    </div>
+  </form>
+</dialog>
 <script type="module" src="/app.js"></script>
 </body>
 </html>
