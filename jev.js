@@ -176,8 +176,9 @@ async function post(body) {
       }
     }
     if ((res.status === 429 || res.status === 529) && attempt < 3) {
-      // retry-after may also be an HTTP date; fall back to a linear backoff then.
-      const seconds = Number(res.headers.get('retry-after')) || attempt;
+      // retry-after may also be an HTTP date; fall back to a linear backoff then. Capped because every
+      // other move waits in the queue behind this one.
+      const seconds = Math.min(Number(res.headers.get('retry-after')) || attempt, 10);
       await new Promise((r) => setTimeout(r, seconds * 1000));
       continue;
     }

@@ -355,6 +355,8 @@ function renderControls() {
   el.primary.setAttribute('aria-label', el.primary.textContent === 'Start' ? 'Start game' : `${el.primary.textContent} game`);
   const turn = state === 'over' ? 'Game over.' : `${sideName(chess.turn())} to move.`;
   el.board.setAttribute('aria-label', `Chess board. ${turn}`);
+  // A reply is reported against the side's current engine, so settings can't change while a move is in flight.
+  for (const n of document.querySelectorAll('.players select, .players input')) n.disabled = thinkingSince != null;
 }
 function renderBars() {
   const top = flipped ? 'w' : 'b', bottom = flipped ? 'b' : 'w';
@@ -540,9 +542,14 @@ $('btn-flip').addEventListener('click', () => {
 });
 el.pgn.addEventListener('click', copyPgn);
 $('banner-close').addEventListener('click', hideBanner);
-$('result-close').addEventListener('click', () => { el.result.hidden = true; });
+function hideResult() {
+  if (el.result.hidden) return;
+  el.result.hidden = true;
+  $('btn-new').focus({ preventScroll: true });
+}
+$('result-close').addEventListener('click', hideResult);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { el.result.hidden = true; hideBanner(); }
+  if (e.key === 'Escape') { hideResult(); hideBanner(); }
 });
 
 players = { w: normalizePlayer(null), b: normalizePlayer(null) };

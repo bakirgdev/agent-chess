@@ -47,6 +47,8 @@ async function latestPerTier() {
 // capabilities so new models need no code change.
 export function listEngines() {
   enginesPromise ??= (async () => {
+    // The SDK's own message for a missing key lists every auth method it knows; this is the one we document.
+    if (!process.env.ANTHROPIC_API_KEY) throw httpError(503, 'ANTHROPIC_API_KEY is not set (put it in .env)');
     client ??= new Anthropic();
     let models;
     try {
