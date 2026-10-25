@@ -9,7 +9,7 @@ const PRICES = {
   'claude-sonnet-5-5': [2, 10],
   'claude-haiku-5-5': [0.1, 0.5],
 };
-// Fast mode (research preview): same model, faster output, premium price.
+// Fast mode: same model, faster output, premium price (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 const FAST_PRICES = { 'claude-opus-5-5': [8, 40] };
 // Models missing from the table are priced like the most expensive Claude model ever sold, so the budget cap stays safe.
 const UNKNOWN_PRICE = [15, 75];
@@ -161,11 +161,10 @@ export async function chooseMove(chess, engine, player, maxUsd) {
       },
     },
     messages: [{ role: 'user', content }],
+    ...(player.fast && { speed: 'fast' }),
   };
   client ??= new Anthropic();
-  const stream = player.fast
-    ? client.beta.messages.stream({ ...params, speed: 'fast', betas: ['fast-mode-2026-02-01'] })
-    : client.messages.stream(params);
+  const stream = client.messages.stream(params);
   let message;
   try {
     message = await stream.finalMessage();
