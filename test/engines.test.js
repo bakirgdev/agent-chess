@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Chess } from 'chess.js';
 import { buildRequest } from '../jev.js';
-import { parsePlayer, publicEngine } from '../claude.js';
+import { parsePlayer, prompt, publicEngine } from '../claude.js';
 
 const play = (...moves) => {
   const chess = new Chess();
@@ -60,4 +60,18 @@ test('server-only engine fields are not sent to the browser', () => {
   assert.equal(shown.offType, undefined);
   assert.equal(shown.maxTokens, undefined);
   assert.equal(shown.id, sonnet.id);
+});
+
+test('Claude prompt numbers moves from the start position', () => {
+  assert.match(prompt(play('e4', 'e5', 'Nf3')), /Game so far: 1\. e4 e5 2\. Nf3\n/);
+  assert.match(prompt(new Chess()), /Game so far: no moves yet/);
+});
+
+test('Claude prompt numbers moves from a custom start with Black to move', () => {
+  const chess = new Chess('8/8/8/8/8/5k2/8/K6R b - - 0 40');
+  chess.move('Ke3');
+  chess.move('Rh3+');
+  chess.move('Kd2');
+  assert.match(prompt(chess), /Game so far: 40\.\.\. Ke3 41\. Rh3\+ Kd2\n/);
+  assert.match(prompt(chess), /It is move 42,/);
 });

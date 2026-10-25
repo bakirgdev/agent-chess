@@ -108,11 +108,16 @@ export function parsePlayer(engine, { thinking, effort = null, budgetTokens = nu
   return { thinking, effort, budgetTokens: thinking === 'budget' ? budgetTokens : null, fast };
 }
 
-function prompt(chess) {
+export function prompt(chess) {
   const side = SIDES[chess.turn()];
   const movetext = chess
-    .history()
-    .map((san, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${san}` : san))
+    .history({ verbose: true })
+    .map((m, i) => {
+      // Numbers come from the FEN before each move so games started from a custom position count correctly.
+      const n = m.before.split(' ')[5];
+      if (m.color === 'w') return `${n}. ${m.san}`;
+      return i === 0 ? `${n}... ${m.san}` : m.san;
+    })
     .join(' ');
   return [
     `You play ${side}. It is move ${chess.moveNumber()}, ${side} to move.${chess.inCheck() ? ' You are in check.' : ''}`,

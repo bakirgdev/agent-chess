@@ -87,6 +87,27 @@ test('rejects illegal or finished games', async () => {
   assert.equal((await postMove({ moves: foolsMate, player: { engine: 'jev' } })).status, 400);
 });
 
+test('plays a legal move from a custom FEN', async () => {
+  const fen = '8/8/8/8/8/5k2/8/K6R b - - 0 40';
+  const res = await postMove({ fen, moves: [], player: { engine: 'jev' } });
+  assert.equal(res.status, 200);
+  assert.ok(new Chess(fen).moves().includes(JSON.parse(res.body).san));
+  const after = await postMove({ fen, moves: ['Ke3', 'Rh3+'], player: { engine: 'jev' } });
+  assert.equal(after.status, 200);
+});
+
+test('rejects a bad, finished or non-string FEN', async () => {
+  const player = { engine: 'jev' };
+  const invalid = await postMove({ fen: 'not a fen', moves: [], player });
+  assert.equal(invalid.status, 400);
+  assert.match(JSON.parse(invalid.body).error, /^Invalid FEN: /);
+  const mated = '7k/6Q1/6K1/8/8/8/8/8 b - - 0 1';
+  assert.equal((await postMove({ fen: mated, moves: [], player })).status, 400);
+  for (const fen of [42, null, ['8/8/8/8/8/8/8/K6k w - - 0 1'], 'x'.repeat(101)]) {
+    assert.equal((await postMove({ fen, moves: [], player })).status, 400, JSON.stringify(fen));
+  }
+});
+
 test('rejects malformed bodies', async () => {
   const bad = (body) => request('POST', '/api/move', { headers: { 'content-type': 'application/json' }, body });
   assert.equal((await bad('{not json')).status, 400);

@@ -62,12 +62,19 @@ async function readJson(req, limit = 64 * 1024) {
   return body;
 }
 
-// Rebuild the game from the SAN history so the server, not the client, decides what is legal.
-function replay(moves) {
+// Rebuild the game from the start position (standard unless `fen` is given) and the SAN history,
+// so the server, not the client, decides what is legal.
+function replay(fen, moves) {
+  if (fen !== undefined && (typeof fen !== 'string' || fen.length > 100)) throw httpError(400, 'fen must be a string of at most 100 characters');
   if (!Array.isArray(moves) || moves.length > 1000 || !moves.every((m) => typeof m === 'string')) {
     throw httpError(400, 'moves must be an array of SAN strings');
   }
-  const chess = new Chess();
+  let chess;
+  try {
+    chess = new Chess(fen);
+  } catch (err) {
+    throw httpError(400, `Invalid FEN: ${err.message}`);
+  }
   for (const san of moves) {
     try {
       chess.move(san);
@@ -121,7 +128,7 @@ async function handleMove(req, res) {
     clientGone = !res.writableFinished;
   });
   const body = await readJson(req);
-  const chess = replay(body.moves);
+  const chess = replay(body.fen, body.moves);
   const player = await parsePlayer(body.player);
 
   // A call already running is finished and billed even if the client leaves; a queued one is skipped.
