@@ -4,6 +4,7 @@
 // Docs: https://docs.typesafe.ai/api/system-one.md, https://docs.typesafe.ai/primitives/choice.md
 
 import { httpError } from './errors.js';
+import { SIDES, movetext } from './public/chessutil.js';
 
 const API_URL = 'https://api.typesafe.ai/v1/systemone';
 export const MODEL = process.env.JEV_MODEL ?? 'jev-latest';
@@ -13,7 +14,6 @@ const USD_PER_INPUT_TOKEN = 42 / 1e9;
 
 const NAMES = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
 const VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-const SIDES = { w: 'White', b: 'Black' };
 const other = (color) => (color === 'w' ? 'b' : 'w');
 
 const attackerNames = (chess, square, color) =>
@@ -44,16 +44,7 @@ function materialSummary(chess, us) {
   return diff > 0 ? `you are ahead in material by ${diff} pawn(s) worth` : `you are behind in material by ${-diff} pawn(s) worth`;
 }
 
-function recentMoves(chess, plies = 12) {
-  const history = chess.history({ verbose: true }).slice(-plies);
-  return history
-    .map((m, i) => {
-      const n = Number(m.before.split(' ')[5]);
-      if (m.color === 'w') return `${n}. ${m.san}`;
-      return i === 0 ? `${n}... ${m.san}` : m.san;
-    })
-    .join(' ');
-}
+const recentMoves = (chess, plies = 12) => movetext(chess.history({ verbose: true }), plies);
 
 // Rough static exchange: what the owner can expect to lose on `square` if the opponent captures there.
 function exchangeLoss(chess, square, owner) {

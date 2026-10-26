@@ -1,7 +1,7 @@
 {
   "name": "agent-chess",
   "version": "1.0.0",
-  "description": "AI vs AI chess on a chess.com-style board: Claude models and TypeSafe Jev play each other",
+  "description": "Claude models, TypeSafe's Jev or you play chess on a chess.com-style board, with a Stockfish eval bar and move grades",
   "license": "MIT",
   "private": true,
   "type": "module",

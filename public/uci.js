@@ -1,13 +1,20 @@
 // Minimal UCI client shared by the native Stockfish (analysis.js, server) and the WASM build (app.js,
-// browser). `send` writes one command; feed every line the engine prints to `feed`.
-export function uciClient(send) {
+// browser). `send` writes one command (it may throw); feed every line the engine prints to `feed`.
+export function uciClient(send, graceMs = 5000) {
   let pending = null;
   let chain = Promise.resolve();
+  // bestmove replies still owed by searches that timed out; they must not answer the next search.
+  let stale = 0;
 
   function feed(line) {
+    if (line.startsWith('bestmove') && stale) {
+      stale--;
+      return;
+    }
     if (!pending) return;
     if (line.startsWith('bestmove')) {
-      const { resolve, lines, depth } = pending;
+      const { resolve, lines, depth, timer } = pending;
+      clearTimeout(timer);
       pending = null;
       resolve({ depth, lines: lines.filter(Boolean) });
       return;
@@ -31,10 +38,20 @@ export function uciClient(send) {
   // Resolves to { depth, lines: [{ move, cp, mate }] }, best line first. Scores are from the side to move.
   function analyse(fen, { movetime, multipv }) {
     const run = chain.then(() => new Promise((resolve, reject) => {
-      pending = { resolve, reject, lines: [], depth: 0 };
-      send(`setoption name MultiPV value ${multipv}`);
-      send(`position fen ${fen}`);
-      send(`go movetime ${movetime}`);
+      // A hung engine would otherwise block every search queued behind this one.
+      const timer = setTimeout(() => {
+        stale++;
+        fail(new Error('Stockfish did not answer in time'));
+        try { send('stop'); } catch { /* engine already gone: nothing left to stop */ }
+      }, movetime + graceMs);
+      pending = { resolve, reject, lines: [], depth: 0, timer };
+      try {
+        send(`setoption name MultiPV value ${multipv}`);
+        send(`position fen ${fen}`);
+        send(`go movetime ${movetime}`);
+      } catch (err) {
+        fail(err);
+      }
     }));
     chain = run.catch(() => {});
     return run;
@@ -42,7 +59,9 @@ export function uciClient(send) {
 
   // The engine died: fail the search in progress instead of leaving it hanging.
   function fail(err) {
-    pending?.reject(err);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.reject(err);
     pending = null;
   }
 

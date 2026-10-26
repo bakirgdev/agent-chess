@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { httpError } from './errors.js';
+import { SIDES, movetext } from './public/chessutil.js';
 
 // USD per million [input, output] tokens, https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-21).
 // Thinking is billed as output. Haiku 5.5's rate is for prompts up to 100K tokens; ours are ~1-3K.
@@ -23,8 +24,6 @@ const SYSTEM =
   'You are a strong chess player in a game of standard chess against another AI. ' +
   'Each turn you get the current position and every legal move. ' +
   'Pick the strongest move for the side you play, and answer with that move copied exactly from the legal moves list.';
-
-const SIDES = { w: 'White', b: 'Black' };
 
 let client;
 let enginesPromise;
@@ -64,15 +63,16 @@ export function listEngines() {
       const has = (t) => types[t]?.supported === true;
       const thinking = [has('adaptive') && 'adaptive', has('enabled') && 'budget', (has('disabled') || has('between_tools')) && 'off'].filter(Boolean);
       const efforts = caps.effort?.supported ? EFFORTS.filter((e) => caps.effort[e]?.supported) : [];
+      const key = priceKey(m.id);
       engines.push({
         id: m.id,
         label: m.display_name,
         anthropic: true,
-        price: PRICES[priceKey(m.id)] ?? UNKNOWN_PRICE,
+        price: PRICES[key] ?? UNKNOWN_PRICE,
         thinking,
         efforts,
-        fast: priceKey(m.id) in FAST_PRICES,
-        fastPrice: FAST_PRICES[priceKey(m.id)] ?? null,
+        fast: key in FAST_PRICES,
+        fastPrice: FAST_PRICES[key] ?? null,
         defaultThinking: thinking.includes('adaptive') ? 'adaptive' : (thinking.at(-1) ?? null),
         defaultEffort: efforts.includes('medium') ? 'medium' : (efforts.at(-1) ?? null),
         // Not sent to the browser.
@@ -110,20 +110,12 @@ export function parsePlayer(engine, { thinking, effort = null, budgetTokens = nu
 
 export function prompt(chess) {
   const side = SIDES[chess.turn()];
-  const movetext = chess
-    .history({ verbose: true })
-    .map((m, i) => {
-      // Numbers come from the FEN before each move so games started from a custom position count correctly.
-      const n = m.before.split(' ')[5];
-      if (m.color === 'w') return `${n}. ${m.san}`;
-      return i === 0 ? `${n}... ${m.san}` : m.san;
-    })
-    .join(' ');
+  const moves = movetext(chess.history({ verbose: true }));
   return [
     `You play ${side}. It is move ${chess.moveNumber()}, ${side} to move.${chess.inCheck() ? ' You are in check.' : ''}`,
     `Position (FEN): ${chess.fen()}`,
     `Board (uppercase = White, lowercase = Black):\n${chess.ascii()}`,
-    `Game so far: ${movetext || 'no moves yet'}`,
+    `Game so far: ${moves || 'no moves yet'}`,
     `Legal moves: ${chess.moves().join(', ')}`,
   ].join('\n\n');
 }

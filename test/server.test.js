@@ -39,8 +39,8 @@ function request(method, path, { headers = {}, body } = {}) {
   });
 }
 
-const postMove = (payload, headers = {}) =>
-  request('POST', '/api/move', { headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(payload) });
+const postJson = (path, payload, headers = {}) =>
+  request('POST', path, { headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(payload) });
 
 test('serves the page with security headers', async () => {
   const res = await request('GET', '/');
@@ -73,7 +73,7 @@ test('config lists Jev even when Anthropic is unreachable', async () => {
 
 test('plays a legal move for the side to move', async () => {
   const moves = ['e4', 'e5', 'Nf3'];
-  const res = await postMove({ moves, player: { engine: 'jev' } });
+  const res = await postJson('/api/move', { moves, player: { engine: 'jev' } });
   assert.equal(res.status, 200);
   const { san, spentUsd } = JSON.parse(res.body);
   const chess = new Chess();
@@ -84,29 +84,29 @@ test('plays a legal move for the side to move', async () => {
 });
 
 test('rejects illegal or finished games', async () => {
-  assert.equal((await postMove({ moves: ['e4', 'Ke2x'], player: { engine: 'jev' } })).status, 400);
+  assert.equal((await postJson('/api/move', { moves: ['e4', 'Ke2x'], player: { engine: 'jev' } })).status, 400);
   const foolsMate = ['f3', 'e5', 'g4', 'Qh4#'];
-  assert.equal((await postMove({ moves: foolsMate, player: { engine: 'jev' } })).status, 400);
+  assert.equal((await postJson('/api/move', { moves: foolsMate, player: { engine: 'jev' } })).status, 400);
 });
 
 test('plays a legal move from a custom FEN', async () => {
   const fen = '8/8/8/8/8/5k2/8/K6R b - - 0 40';
-  const res = await postMove({ fen, moves: [], player: { engine: 'jev' } });
+  const res = await postJson('/api/move', { fen, moves: [], player: { engine: 'jev' } });
   assert.equal(res.status, 200);
   assert.ok(new Chess(fen).moves().includes(JSON.parse(res.body).san));
-  const after = await postMove({ fen, moves: ['Ke3', 'Rh3+'], player: { engine: 'jev' } });
+  const after = await postJson('/api/move', { fen, moves: ['Ke3', 'Rh3+'], player: { engine: 'jev' } });
   assert.equal(after.status, 200);
 });
 
 test('rejects a bad, finished or non-string FEN', async () => {
   const player = { engine: 'jev' };
-  const invalid = await postMove({ fen: 'not a fen', moves: [], player });
+  const invalid = await postJson('/api/move', { fen: 'not a fen', moves: [], player });
   assert.equal(invalid.status, 400);
   assert.match(JSON.parse(invalid.body).error, /^Invalid FEN: /);
   const mated = '7k/6Q1/6K1/8/8/8/8/8 b - - 0 1';
-  assert.equal((await postMove({ fen: mated, moves: [], player })).status, 400);
+  assert.equal((await postJson('/api/move', { fen: mated, moves: [], player })).status, 400);
   for (const fen of [42, null, ['8/8/8/8/8/8/8/K6k w - - 0 1'], 'x'.repeat(101)]) {
-    assert.equal((await postMove({ fen, moves: [], player })).status, 400, JSON.stringify(fen));
+    assert.equal((await postJson('/api/move', { fen, moves: [], player })).status, 400, JSON.stringify(fen));
   }
 });
 
@@ -117,29 +117,36 @@ test('rejects malformed bodies', async () => {
   assert.equal((await bad('{"moves":"e4"}')).status, 400);
 });
 
-// A web page can send a text/plain POST without a CORS preflight; only JSON is accepted.
 test('native analysis reports itself unavailable when Stockfish is missing', async () => {
   assert.equal(JSON.parse((await request('GET', '/api/config')).body).stockfish, false);
-  const evalPost = (body, headers = {}) =>
-    request('POST', '/api/eval', { headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const fen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
-  assert.equal((await evalPost({ fen })).status, 503);
-  assert.equal((await evalPost({ fen: 'not a fen' })).status, 400);
-  assert.equal((await evalPost({ fen }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await postJson('/api/eval', { fen })).status, 503);
+  assert.equal((await postJson('/api/eval', { fen: 'not a fen' })).status, 400);
+  assert.equal((await postJson('/api/eval', { fen }, { origin: 'https://evil.example' })).status, 403);
 });
 
+test('rejects a position where the side not to move is in check', async () => {
+  // chess.js accepts this FEN, but Stockfish crashes on it.
+  const fen = '4k3/8/8/8/8/8/4R3/4K3 w - - 0 1';
+  for (const [path, payload] of [['/api/eval', { fen }], ['/api/move', { fen, moves: [], player: { engine: 'jev' } }]]) {
+    const res = await postJson(path, payload);
+    assert.equal(res.status, 400, path);
+    assert.match(JSON.parse(res.body).error, /^Illegal position: /);
+  }
+});
+
+// A web page can send a text/plain POST without a CORS preflight; only JSON is accepted.
 test('refuses requests that skip the CORS preflight', async () => {
-  const res = await request('POST', '/api/move', {
-    headers: { 'content-type': 'text/plain' },
-    body: JSON.stringify({ moves: [], player: { engine: 'jev' } }),
-  });
-  assert.equal(res.status, 415);
+  const body = JSON.stringify({ moves: [], player: { engine: 'jev' }, fen: '8/8/8/8/8/8/8/K6k w - - 0 1' });
+  for (const [path, headers] of [['/api/move', { 'content-type': 'text/plain' }], ['/api/eval', {}]]) {
+    assert.equal((await request('POST', path, { headers, body })).status, 415, path);
+  }
 });
 
 test('refuses cross-origin and DNS-rebinding requests', async () => {
   const payload = { moves: [], player: { engine: 'jev' } };
-  assert.equal((await postMove(payload, { origin: 'https://evil.example' })).status, 403);
-  assert.equal((await postMove(payload, { host: `evil.example:${PORT}` })).status, 403);
+  assert.equal((await postJson('/api/move', payload, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await postJson('/api/move', payload, { host: `evil.example:${PORT}` })).status, 403);
   assert.equal((await request('GET', '/api/config', { headers: { host: 'evil.example' } })).status, 403);
-  assert.equal((await postMove(payload, { origin: `http://localhost:${PORT}` })).status, 200);
+  assert.equal((await postJson('/api/move', payload, { origin: `http://localhost:${PORT}` })).status, 200);
 });

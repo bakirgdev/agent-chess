@@ -1,12 +1,15 @@
 import { Chess, DEFAULT_POSITION, validateFen } from '/vendor/chess.js';
 import * as sound from '/sound.js';
 import { uciClient } from '/uci.js';
+import { SIDES, illegalPositionReason } from '/chessutil.js';
 
 const $ = (id) => document.getElementById(id);
 const FILES = 'abcdefgh';
 const VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9 };
 const ORDER = ['p', 'n', 'b', 'r', 'q'];
 const NAMES = { q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight' };
+const other = (color) => (color === 'w' ? 'b' : 'w');
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 const el = {
   board: $('board'), result: $('result'), banner: $('banner'), bannerText: $('banner-text'),
@@ -30,7 +33,8 @@ const sideModel = { w: null, b: null }; // last model id reported per side, with
 
 let chess, state, flipped = false, gen = 0, loopGen = null, controller = null;
 let spent = 0;
-let moveLog, totals, thinkingSince, tick, lastThink, lastResult;
+// `plies` caches chess.history({ verbose: true }), which chess.js rebuilds by replaying the whole game.
+let plies, moveLog, totals, thinkingSince, tick, lastThink, lastResult;
 let squareEls = new Map();
 let pieceEls = new Map();
 let piecesLayer;
@@ -48,17 +52,17 @@ function resetGame(game = new Chess()) {
   // Resolving a pending human move lets the old game's loop see the new generation and exit.
   humanWait?.resolve(null);
   cancelPromo?.();
-  clearInterval(tick);
+  stopClock();
   chess = game;
+  plies = chess.history({ verbose: true });
   startFen = chess.getHeaders().FEN ?? DEFAULT_POSITION;
   viewPly = null;
   selected = null;
   state = 'idle';
-  moveLog = chess.history().map((san) => ({ san, conf: null, model: 'imported' }));
+  moveLog = plies.map((m) => ({ san: m.san, conf: null, model: 'imported' }));
   totals = { w: 0, b: 0, ms: 0 };
-  thinkingSince = null;
   lastThink = null;
-  lastResult = gameOutcome();
+  lastResult = gameOutcome() ?? recordedResult();
   el.result.hidden = true;
   hideBanner();
   buildBoard();
@@ -84,11 +88,8 @@ function makePiece(color, type, sq) {
   piecesLayer.appendChild(n);
   pieceEls.set(sq, n);
 }
-function positionAt(ply) {
-  const g = new Chess(startFen);
-  for (const san of chess.history().slice(0, ply)) g.move(san);
-  return g;
-}
+// Earlier positions are rebuilt from the FEN after that ply, so they carry no move history.
+const positionAt = (ply) => (ply === plies.length ? chess : new Chess(ply ? plies[ply - 1].after : startFen));
 const shown = () => (viewPly === null ? chess : positionAt(viewPly));
 function buildBoard() {
   const pos = shown();
@@ -119,10 +120,9 @@ function buildBoard() {
 function updateHighlights(pos = shown()) {
   for (const d of squareEls.values()) d.classList.remove('hl', 'check');
   for (const b of el.board.querySelectorAll('.badge')) b.remove();
-  const played = pos.history({ verbose: true });
-  const last = played.at(-1);
+  const ply = viewPly ?? plies.length, last = plies[ply - 1];
   if (last) { squareEls.get(last.from).classList.add('hl'); squareEls.get(last.to).classList.add('hl'); }
-  const g = last && grade(played.length - 1, chess.history({ verbose: true }));
+  const g = last && grade(ply - 1);
   if (g) {
     const badge = document.createElement('span');
     badge.className = `badge g-${g.kind}`;
@@ -226,10 +226,11 @@ el.board.addEventListener('pointerdown', (ev) => {
   if (selected && movesFrom(selected).some((m) => m.to === sq)) { tryMove(selected, sq); return; }
   const p = chess.get(sq);
   if (!p || p.color !== chess.turn()) { select(null); return; }
+  const wasSelected = selected === sq;
   select(sq);
   const node = pieceEls.get(sq);
   if (!node) return;
-  drag = { node, from: sq, x: ev.clientX, y: ev.clientY, moved: false };
+  drag = { node, from: sq, x: ev.clientX, y: ev.clientY, moved: false, wasSelected };
   el.board.setPointerCapture(ev.pointerId);
 });
 el.board.addEventListener('pointermove', (ev) => {
@@ -242,10 +243,11 @@ el.board.addEventListener('pointermove', (ev) => {
 });
 function endDrag(ev, dropped) {
   if (!drag) return;
-  const { node, from, moved } = drag;
+  const { node, from, moved, wasSelected } = drag;
   drag = null;
   node.classList.remove('dragging');
-  if (!moved) return;
+  // A click on the already selected piece deselects it, as on chess.com.
+  if (!moved) { if (wasSelected) select(null); return; }
   const sq = dropped ? squareAt(ev) : null;
   if (sq && sq !== from && movesFrom(from).some((m) => m.to === sq)) tryMove(from, sq);
   else place(node, from);
@@ -255,7 +257,7 @@ el.board.addEventListener('pointercancel', (ev) => endDrag(ev, false));
 
 /* ---------- move list browsing ---------- */
 function view(ply) {
-  const n = chess.history().length;
+  const n = plies.length;
   const next = ply === null || ply >= n || n === 0 ? null : Math.max(0, ply);
   if (next === viewPly) return;
   cancelPromo?.();
@@ -277,16 +279,25 @@ const GRADES = {
   good: ['\u2713', 'Good'], inaccuracy: ['?!', 'Inaccuracy'], mistake: ['?', 'Mistake'], blunder: ['??', 'Blunder'],
 };
 let analysisMode = 'off', evals = [], analysisGen = 0, analysing = false, worker = null, browserUci = null;
+// The search in flight, even one from a previous game: a new game waits for it, so a tab never has more
+// than one analysis request open (the server caps them).
+let searching = Promise.resolve();
 
-// Lichess's win-chance curve: a line's score (from the side to move) as 0..100.
-const winChance = (l) => (l.mate != null ? (l.mate > 0 ? 100 : 0) : 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * l.cp)) - 1));
+// Lichess's win-chance curve: a line's score (from the side to move) as 0..100, centipawns capped at ±1000.
+function winChance({ cp, mate }) {
+  if (mate != null) return mate > 0 ? 100 : 0;
+  return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * Math.max(-1000, Math.min(1000, cp)))) - 1);
+}
+// Highest loss in win chance (percentage points) for each grade; lichess flags 5/10/15 as inaccuracy/mistake/blunder.
+const LOSS_GRADES = [[2, 'excellent'], [5, 'good'], [10, 'inaccuracy'], [15, 'mistake'], [Infinity, 'blunder']];
 
 function browserEngine() {
   if (!browserUci) {
     worker = new Worker('/vendor/stockfish/stockfish-19-lite-single.js');
     browserUci = uciClient((cmd) => worker.postMessage(cmd));
     worker.onmessage = (ev) => browserUci.feed(String(ev.data));
-    worker.onerror = (ev) => browserUci.fail(new Error(ev.message || 'Stockfish worker failed to load'));
+    // The worker's own error text is often just "Uncaught [object Object]".
+    worker.onerror = () => browserUci.fail(new Error('the in-browser Stockfish crashed'));
     worker.postMessage('uci');
   }
   return browserUci;
@@ -321,20 +332,19 @@ async function evaluate(pos) {
 }
 // Grade of ply i from the mover's loss in win chance, with lichess-style thresholds and chess.com names.
 // "Great" is the engine's best move when the second-best move is much worse.
-function grade(i, history) {
-  const a = evals[i], b = evals[i + 1], m = history[i];
+function grade(i) {
+  const a = evals[i], b = evals[i + 1], m = plies[i];
   if (!a || !b || !m) return null;
   if (a.legal === 1) return { kind: 'forced', loss: 0 };
   if (m.lan === a.best) return { kind: a.gap >= 15 ? 'great' : 'best', loss: 0 };
   const loss = Math.max(0, m.color === 'w' ? a.wp - b.wp : b.wp - a.wp);
-  const kind = loss <= 2 ? 'excellent' : loss <= 5 ? 'good' : loss <= 10 ? 'inaccuracy' : loss <= 20 ? 'mistake' : 'blunder';
-  return { kind, loss };
+  return { kind: LOSS_GRADES.find(([max]) => loss <= max)[1], loss };
 }
 // Lichess's per-move accuracy formula, averaged per side (forced moves don't count).
-function accuracy(history) {
+function accuracy() {
   const per = { w: [], b: [] };
-  history.forEach((m, i) => {
-    const g = grade(i, history);
+  plies.forEach((m, i) => {
+    const g = grade(i);
     if (g && g.kind !== 'forced') per[m.color].push(Math.min(100, Math.max(0, 103.1668 * Math.exp(-0.04354 * g.loss) - 3.1669)));
   });
   const avg = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null);
@@ -345,13 +355,17 @@ async function pumpAnalysis() {
   analysing = true;
   const myGen = analysisGen;
   try {
+    await searching;
     for (;;) {
+      if (myGen !== analysisGen) return;
       // The live position first, so the bar keeps up; then any earlier gaps (e.g. a loaded PGN).
-      const n = chess.history().length;
+      const n = plies.length;
       let ply = evals[n] ? -1 : n;
       for (let i = 0; ply < 0 && i < n; i++) if (!evals[i]) ply = i;
       if (ply < 0) break;
-      const result = await evaluate(positionAt(ply));
+      const job = evaluate(positionAt(ply));
+      searching = job.catch(() => {});
+      const result = await job;
       if (myGen !== analysisGen) return;
       evals[ply] = result;
       renderAnalysis();
@@ -368,7 +382,6 @@ function restartAnalysis() {
   analysisGen++;
   analysing = false;
   evals = [];
-  renderAnalysis();
   pumpAnalysis();
 }
 function setAnalysisMode(mode, { save = true } = {}) {
@@ -379,6 +392,7 @@ function setAnalysisMode(mode, { save = true } = {}) {
     try { localStorage.setItem(ANALYSIS_KEY, mode); } catch { /* storage unavailable: setting lasts for this page only */ }
   }
   restartAnalysis();
+  renderAnalysis();
 }
 function initAnalysis() {
   const native = $('analysis').querySelector('option[value="native"]');
@@ -397,7 +411,7 @@ function renderEvalBar() {
   if (bar.hidden) return;
   // Until the shown position is evaluated, keep showing the last known one instead of jumping to even.
   let e = null;
-  for (let k = viewPly ?? chess.history().length; k >= 0 && !e; k--) e = evals[k] ?? null;
+  for (let k = viewPly ?? plies.length; k >= 0 && !e; k--) e = evals[k] ?? null;
   const wp = e ? e.wp : 50, whiteLeads = wp >= 50;
   bar.classList.toggle('flipped', flipped);
   bar.querySelector('.evalfill').style.height = `${wp}%`;
@@ -429,10 +443,10 @@ const modesOf = (e) => e.thinking ?? [];
 const effortsOf = (e) => e.efforts ?? [];
 const cap = (t) => t[0].toUpperCase() + t.slice(1);
 const fmtTok = (n) => `${Math.round(n / 1024)}K`;
-const fmtPrice = (p) => `$${Number(p[0])}/$${Number(p[1])}`;
+const fmtPrice = (p) => `$${p[0]}/$${p[1]}`;
 function allowedEfforts(e, thinking) {
   const all = effortsOf(e);
-  return thinking === 'off' ? all.filter((f) => (config.effortsWithoutThinking || []).includes(f)) : all;
+  return thinking === 'off' ? all.filter((f) => config.effortsWithoutThinking.includes(f)) : all;
 }
 function clampEffort(p) {
   const e = engineOf(p.engine), a = allowedEfforts(e, p.thinking);
@@ -479,8 +493,8 @@ function detailParts(color) {
 }
 const tagFor = (color) => [modelFor(color), ...detailParts(color)].join(' · ');
 function playerDesc(color) {
-  if (engineOf(players[color].engine).human) return HUMAN.label;
-  return `${engineOf(players[color].engine).label} (${[modelFor(color), ...detailParts(color)].join(', ')})`;
+  const e = engineOf(players[color].engine);
+  return e.human ? e.label : `${e.label} (${[modelFor(color), ...detailParts(color)].join(', ')})`;
 }
 function renderTitle() {
   const t = `${engineOf(players.w.engine).label} vs ${engineOf(players.b.engine).label}`;
@@ -496,7 +510,6 @@ function renderPlayers() {
     $(`fth-${c}`).hidden = modes.length < 2;
     $(`thst-${c}`).hidden = modes.length !== 1;
     if (modes.length === 1) $(`thst-${c}`).textContent = modes[0] === 'off' ? 'Thinking: off' : 'Thinking: always on';
-    if (modes.length > 1) $(`think-${c}`).value = p.thinking;
     $(`fbud-${c}`).hidden = p.thinking !== 'budget';
     $(`bud-${c}`).value = String(p.budget);
     $(`feff-${c}`).hidden = !efforts.length;
@@ -511,10 +524,8 @@ function renderPlayers() {
     // Thinking select options depend on the engine
     if (modes.length > 1) {
       const sel = $(`think-${c}`);
-      if ([...sel.options].map((o) => o.value).join() !== modes.join()) {
-        sel.replaceChildren(...modes.map((m) => new Option(cap(m), m)));
-        sel.value = p.thinking;
-      }
+      if ([...sel.options].map((o) => o.value).join() !== modes.join()) sel.replaceChildren(...modes.map((m) => new Option(cap(m), m)));
+      sel.value = p.thinking;
     }
   }
   const note = $('pnote');
@@ -563,7 +574,7 @@ function playersChanged() { savePlayers(); renderPlayers(); renderBars(); }
 /* ---------- player bars ---------- */
 function captured() {
   const caps = { w: [], b: [] }; // pieces captured BY that side
-  for (const m of chess.history({ verbose: true })) if (m.captured) caps[m.color].push(m.captured);
+  for (const m of plies) if (m.captured) caps[m.color].push(m.captured);
   return caps;
 }
 // Counted from the board rather than the captures, so promotions and loaded positions are right too.
@@ -577,10 +588,9 @@ function fmtClock(ms) {
   const m = Math.floor(t / 60);
   return `${m}:${(t - m * 60).toFixed(1).padStart(4, '0')}`;
 }
-function renderBar(node, color) {
-  const caps = captured();
+function renderBar(node, color, caps) {
   const mine = caps[color];
-  const oppColor = color === 'w' ? 'b' : 'w';
+  const oppColor = other(color);
   const adv = material(color) - material(oppColor);
   const groups = ORDER.map((t) => {
     const n = mine.filter((x) => x === t).length;
@@ -596,10 +606,9 @@ function renderBar(node, color) {
       <div class="pname">${esc(eng.label)} <span class="tag">${esc(tagFor(color))}</span><span class="dot"></span></div>
       <div class="captured" aria-label="Captured pieces">${groups}${adv > 0 ? `<span class="adv">+${adv}</span>` : ''}</div>
     </div>
-    <div class="clock" role="timer" aria-label="${color === 'w' ? 'White' : 'Black'} thinking time">${fmtClock(clockMs)}</div>`;
+    <div class="clock" role="timer" aria-label="${SIDES[color]} thinking time">${fmtClock(clockMs)}</div>`;
 }
 const monogram = (e) => { const w = e.label.split(' '); return (w[0] === 'Claude' && w[1] ? w[1] : w[0])[0].toUpperCase(); };
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 /* ---------- panels ---------- */
 function renderMoves() {
@@ -607,27 +616,39 @@ function renderMoves() {
   // A loaded position can start at any move number, with Black to move.
   const [, side, , , , fullmove] = startFen.split(' ');
   const offset = side === 'b' ? 1 : 0;
-  const history = analysisMode === 'off' ? [] : chess.history({ verbose: true });
-  for (let i = 0; i < moveLog.length + offset; i += 2) {
+  // One tab stop for the whole list (the viewed or last move); arrow keys move between moves.
+  const current = viewPly ?? moveLog.length;
+  for (let i = 0; moveLog.length && i < moveLog.length + offset; i += 2) {
     const cell = (k) => {
       const j = k - offset, m = moveLog[j];
       if (!m) return '<span></span>';
       const tip = m.conf == null ? (m.model || 'unknown model') : `Confidence: ${Math.round(m.conf * 100)}%`;
       const viewing = viewPly === j + 1;
-      const g = analysisMode === 'off' ? null : grade(j, history);
+      const g = analysisMode === 'off' ? null : grade(j);
       const mark = g ? `<span class="grade g-${g.kind}" aria-hidden="true">${GRADES[g.kind][0]}</span><span class="sr"> (${GRADES[g.kind][1]})</span>` : '';
       const cls = `mv${j === moveLog.length - 1 ? ' last' : ''}${viewing ? ' viewing' : ''}`;
-      return `<button type="button" class="${cls}" data-ply="${j + 1}" title="${esc(tip)}"${viewing ? ' aria-current="true"' : ''}>${esc(m.san)}${mark}</button>`;
+      const attrs = `${viewing ? ' aria-current="true"' : ''} tabindex="${j + 1 === current ? 0 : -1}"`;
+      return `<button type="button" class="${cls}" data-ply="${j + 1}" title="${esc(tip)}"${attrs}>${esc(m.san)}${mark}</button>`;
     };
     rows.push(`<div class="mrow"><span class="mnum">${Number(fullmove) + i / 2}.</span>${cell(i)}${cell(i + 1)}</div>`);
   }
   if (lastResult) rows.push(`<div class="mres"><b>${lastResult.score}</b> &nbsp;${esc(lastResult.title)} (${esc(lastResult.reason)})</div>`);
-  // The list is rebuilt on every render; keep keyboard focus on the same move.
-  const focused = el.moves.contains(document.activeElement) ? document.activeElement.dataset.ply : undefined;
-  el.moves.innerHTML = rows.join('');
-  if (focused) el.moves.querySelector(`[data-ply="${focused}"]`)?.focus({ preventScroll: true });
-  if (viewPly === null) el.moves.scrollTop = el.moves.scrollHeight;
-  else el.moves.querySelector('.viewing')?.scrollIntoView({ block: 'nearest' });
+  // The list is rebuilt on every render: keep keyboard focus on the current move, and only follow the
+  // newest move if the reader hasn't scrolled away from it.
+  const list = el.moves;
+  const hadFocus = list.contains(document.activeElement);
+  const follow = list.scrollHeight - list.scrollTop - list.clientHeight < 8 || list.childElementCount !== rows.length;
+  list.innerHTML = rows.join('');
+  if (hadFocus) list.querySelector('[tabindex="0"]')?.focus({ preventScroll: true });
+  const v = viewPly === null ? null : list.querySelector('.viewing');
+  if (v) {
+    // Scroll only the list (scrollIntoView would also scroll the page).
+    const r = v.getBoundingClientRect(), box = list.getBoundingClientRect();
+    if (r.top < box.top) list.scrollTop -= box.top - r.top;
+    else if (r.bottom > box.bottom) list.scrollTop += r.bottom - box.bottom;
+  } else if (viewPly === null && follow) {
+    list.scrollTop = list.scrollHeight;
+  }
 }
 function renderThink() {
   const title = lastThink ? `${lastThink.label}'s thinking` : 'Thinking';
@@ -636,11 +657,11 @@ function renderThink() {
   if (!lastThink) { el.think.innerHTML = '<p class="muted">No decision yet.</p>'; return; }
   const { san, candidates, thinking } = lastThink;
   if (candidates.length) {
-    const shown = candidates.slice(0, 5).map((c) => ({ san: c.san, pct: Math.max(0, Math.min(100, c.p * 100)) }));
-    el.think.innerHTML = shown.map((c) => `<div class="cand${c.san === san ? ' pick' : ''}"><span class="san">${esc(c.san)}</span>
+    const bars = candidates.map((c) => ({ san: c.san, pct: Math.max(0, Math.min(100, c.p * 100)) }));
+    el.think.innerHTML = bars.map((c) => `<div class="cand${c.san === san ? ' pick' : ''}"><span class="san">${esc(c.san)}</span>
       <span class="track"><span class="fill"></span></span>
       <span class="pct">${c.pct < 10 ? c.pct.toFixed(1) : Math.round(c.pct)}%</span></div>`).join('');
-    el.think.querySelectorAll('.fill').forEach((f, i) => { f.style.width = `${shown[i].pct}%`; });
+    el.think.querySelectorAll('.fill').forEach((f, i) => { f.style.width = `${bars[i].pct}%`; });
   } else if (thinking) {
     el.think.innerHTML = `<div class="think-text" tabindex="0" role="region" aria-label="${esc(title)}">${esc(thinking)}</div>`;
   } else {
@@ -652,28 +673,28 @@ function renderStats() {
   const avg = n ? Math.round(totals.ms / n) : 0;
   let acc = '';
   if (analysisMode !== 'off') {
-    const a = accuracy(chess.history({ verbose: true }));
+    const a = accuracy(), done = evals.filter(Boolean).length, total = plies.length + 1;
     if (a.w != null || a.b != null) acc = ` · Accuracy: White ${a.w ?? '-'}%, Black ${a.b ?? '-'}%`;
+    if (done < total) acc += ` · Analysing ${done}/${total}`;
   }
   el.stats.textContent = `Moves: ${n} · Spent: $${spent.toFixed(4)}${config.budgetUsd == null ? '' : ` of $${Number(config.budgetUsd).toFixed(4)}`} · Avg: ${avg} ms/move${acc}`;
 }
-function sideName(c) { return c === 'w' ? 'White' : 'Black'; }
 function renderStatus() {
   const s = el.status;
   if (state === 'idle') s.textContent = 'Press Start to begin';
   else if (state === 'over') s.textContent = lastResult ? `${lastResult.title} · ${lastResult.reason}` : 'Game over';
-  else if (thinkingSince && state === 'paused') s.textContent = `Pausing after ${sideName(chess.turn())}'s move\u2026`;
-  else if (humanWait) s.textContent = `Your move (${sideName(chess.turn())})`;
-  else if (thinkingSince) s.textContent = `${sideName(chess.turn())} is thinking\u2026`;
+  else if (thinkingSince && state === 'paused') s.textContent = `Pausing after ${SIDES[chess.turn()]}'s move\u2026`;
+  else if (humanWait) s.textContent = `Your move (${SIDES[chess.turn()]})`;
+  else if (thinkingSince) s.textContent = `${SIDES[chess.turn()]} is thinking\u2026`;
   else if (state === 'paused') s.textContent = 'Paused';
-  else s.textContent = `${sideName(chess.turn())} to move`;
+  else s.textContent = `${SIDES[chess.turn()]} to move`;
   if (viewPly !== null) s.textContent += ` \u00b7 viewing move ${viewPly} (End for live)`;
 }
 function renderControls() {
-  el.primary.textContent = state === 'idle' ? 'Start' : state === 'running' ? 'Pause' : state === 'paused' ? 'Resume' : 'Start';
+  el.primary.textContent = { running: 'Pause', paused: 'Resume' }[state] ?? 'Start';
   el.primary.disabled = state === 'over';
-  el.primary.setAttribute('aria-label', el.primary.textContent === 'Start' ? 'Start game' : `${el.primary.textContent} game`);
-  const turn = state === 'over' ? 'Game over.' : `${sideName(chess.turn())} to move.`;
+  el.primary.setAttribute('aria-label', `${el.primary.textContent} game`);
+  const turn = state === 'over' ? 'Game over.' : `${SIDES[chess.turn()]} to move.`;
   el.board.setAttribute('aria-label', `Chess board. ${turn}`);
   // A reply is reported against the side's current engine, so settings can't change while a move is in flight.
   for (const n of document.querySelectorAll('.players select, .players input')) n.disabled = thinkingSince != null;
@@ -683,9 +704,9 @@ function renderControls() {
   if (!sanForm.hidden && refocusSan) { refocusSan = false; $('san-input').focus(); }
 }
 function renderBars() {
-  const top = flipped ? 'w' : 'b', bottom = flipped ? 'b' : 'w';
-  renderBar($('bar-top'), top);
-  renderBar($('bar-bottom'), bottom);
+  const caps = captured();
+  renderBar($('bar-top'), flipped ? 'w' : 'b', caps);
+  renderBar($('bar-bottom'), flipped ? 'b' : 'w', caps);
 }
 function renderAll() { renderBars(); renderEvalBar(); renderMoves(); renderThink(); renderStats(); renderStatus(); renderControls(); }
 
@@ -695,8 +716,8 @@ function hideBanner() { el.banner.hidden = true; }
 
 function gameOutcome() {
   if (chess.isCheckmate()) {
-    const w = chess.turn() === 'b';
-    return { title: `${w ? 'White' : 'Black'} Won`, reason: 'by checkmate', score: w ? '1-0' : '0-1' };
+    const winner = other(chess.turn());
+    return { title: `${SIDES[winner]} Won`, reason: 'by checkmate', score: winner === 'w' ? '1-0' : '0-1' };
   }
   const draw = (reason) => ({ title: 'Draw', reason, score: '½-½' });
   if (chess.isStalemate()) return draw('by stalemate');
@@ -704,6 +725,13 @@ function gameOutcome() {
   if (chess.isInsufficientMaterial()) return draw('by insufficient material');
   if (chess.isDrawByFiftyMoves()) return draw('by the 50-move rule');
   return null;
+}
+// A loaded PGN can end by resignation or agreement, which the position alone doesn't show.
+function recordedResult() {
+  const score = { '1-0': '1-0', '0-1': '0-1', '1/2-1/2': '\u00BD-\u00BD' }[chess.getHeaders().Result];
+  if (!score || !plies.length) return null;
+  const title = score === '1-0' ? 'White Won' : score === '0-1' ? 'Black Won' : 'Draw';
+  return { title, reason: 'as recorded in the PGN', score };
 }
 function showResult(o) {
   $('result-title').textContent = o.title;
@@ -714,6 +742,10 @@ function showResult(o) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function stopClock() {
+  thinkingSince = null;
+  clearInterval(tick);
+}
 
 function startClockTick() {
   clearInterval(tick);
@@ -730,7 +762,7 @@ async function requestMove(color, signal) {
     : { engine: p.engine, effort: null, budgetTokens: null, fast: false };
   const res = await fetch('/api/move', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ fen: startFen, moves: chess.history(), player }), signal,
+    body: JSON.stringify({ fen: startFen, moves: plies.map((m) => m.san), player }), signal,
   });
   let body = null;
   try { body = await res.json(); } catch { /* handled below */ }
@@ -761,8 +793,7 @@ async function loop() {
         if (!san) {
           // Paused on the human's turn: keep the time spent so far on their clock.
           totals[color] += performance.now() - thinkingSince;
-          thinkingSince = null;
-          clearInterval(tick);
+          stopClock();
           return;
         }
         r = { san, ms: Math.round(performance.now() - thinkingSince), model: HUMAN.model };
@@ -772,8 +803,7 @@ async function loop() {
           r = await requestMove(color, mine.signal);
         } catch (e) {
           if (gen !== myGen || e.name === 'AbortError') return;
-          thinkingSince = null;
-          clearInterval(tick);
+          stopClock();
           state = 'paused';
           showBanner(e.message || 'Network error');
           renderAll();
@@ -781,11 +811,11 @@ async function loop() {
         }
         if (gen !== myGen) return;
       }
-      thinkingSince = null;
-      clearInterval(tick);
+      stopClock();
       let m;
       try {
         m = chess.move(r.san);
+        plies.push(m);
       } catch {
         state = 'paused';
         showBanner(`${eng.label} returned an illegal move: ${r.san}`);
@@ -808,8 +838,7 @@ async function loop() {
       // While browsing old moves the board stays put; End or a click on the last move catches up.
       if (viewPly === null) animateMove(m);
       const out = gameOutcome();
-      const castle = m.isKingsideCastle() || m.isQueensideCastle();
-      sound.play(out ? 'end' : chess.inCheck() ? 'check' : m.isCapture() ? 'capture' : castle ? 'castle' : 'move');
+      sound.play(soundFor(m, out));
       pumpAnalysis();
       if (out) {
         state = 'over';
@@ -829,6 +858,13 @@ async function loop() {
     if (controller === mine) controller = null;
     if (gen === myGen && state === 'paused') renderAll();
   }
+}
+
+function soundFor(m, outcome) {
+  if (outcome) return 'end';
+  if (chess.inCheck()) return 'check';
+  if (m.isCapture()) return 'capture';
+  return m.isKingsideCastle() || m.isQueensideCastle() ? 'castle' : 'move';
 }
 
 function onPrimary() {
@@ -909,6 +945,13 @@ $('san-form').addEventListener('submit', (ev) => {
   const text = input.value.trim();
   const bare = (san) => san.replace(/[+#!?]/g, '');
   const move = chess.moves({ verbose: true }).find((m) => bare(m.san) === bare(text) || m.lan === text.toLowerCase());
+  const coords = /^([a-h][1-8])([a-h][1-8])$/.exec(text.toLowerCase());
+  if (!move && coords && canMove() && movesFrom(coords[1]).some((m) => m.to === coords[2])) {
+    // e7e8 without a piece letter: ask which piece, like a promotion on the board.
+    input.value = '';
+    tryMove(coords[1], coords[2]);
+    return;
+  }
   if (!move || !canMove()) {
     input.setCustomValidity(move ? 'Not your turn' : `${text || 'That'} is not a legal move here`);
     input.reportValidity();
@@ -927,13 +970,19 @@ function parseGame(text) {
   // Some sites copy FENs without the move counters.
   const fields = text.split(/\s+/);
   const fen = fields.length === 4 ? `${fields.join(' ')} 0 1` : fields.join(' ');
-  if (validateFen(fen).ok) return new Chess(fen);
-  const game = new Chess();
-  try {
-    game.loadPgn(text);
-  } catch (err) {
-    throw new Error(`Not a valid FEN or PGN: ${err.message}`);
+  let game;
+  if (validateFen(fen).ok) {
+    game = new Chess(fen);
+  } else {
+    game = new Chess();
+    try {
+      game.loadPgn(text);
+    } catch (err) {
+      throw new Error(`Not a valid FEN or PGN: ${err.message}`);
+    }
   }
+  const illegal = illegalPositionReason(game);
+  if (illegal) throw new Error(`Illegal position: ${illegal}`);
   return game;
 }
 $('btn-load').addEventListener('click', () => {
@@ -961,9 +1010,11 @@ function hideResult() {
 }
 $('result-close').addEventListener('click', hideResult);
 document.addEventListener('keydown', (e) => {
+  // The Load dialog handles its own Escape (closing itself) and keys.
+  if (el.loadDialog.open) return;
   if (e.key === 'Escape') { cancelPromo?.(); select(null); hideResult(); hideBanner(); return; }
-  if (e.altKey || e.ctrlKey || e.metaKey || e.target.closest?.('select, input, textarea, dialog, .promo')) return;
-  const n = chess.history().length, at = viewPly ?? n;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.target.closest?.('select, input, textarea, .promo')) return;
+  const n = plies.length, at = viewPly ?? n;
   const to = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: n }[e.key];
   if (to === undefined) return;
   e.preventDefault();

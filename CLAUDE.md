@@ -26,6 +26,7 @@ npm test           # node:test, never touches a paid API
 | `jev.js` | Jev option facts per legal move, request, retries |
 | `analysis.js` | Optional native Stockfish (one UCI process) behind `POST /api/eval` |
 | `public/uci.js` | UCI parser shared by native Stockfish (server) and the WASM worker (browser) |
+| `public/chessutil.js` | `movetext`, `SIDES`, `illegalPositionReason`, shared by server and browser |
 | `errors.js` | `httpError(status, message, extra)`, the only error shape the server sends |
 | `public/app.js` | Game loop, board rendering and animation, human input, move browsing, FEN/PGN load, settings UI, PGN |
 | `public/sound.js` | WebAudio move sounds and the mute setting |
@@ -37,6 +38,8 @@ npm test           # node:test, never touches a paid API
 - Every real move costs money. Keep `BUDGET_USD` enforced, count billed failures (`err.costUsd`), size Claude's `max_tokens` from the remaining budget, and keep moves serialized through `queue`.
 - Claude model ids, capabilities and options come from the Models API at runtime. Never hardcode a model list; only `PRICES` in `claude.js` is a table, and unknown models fall back to `UNKNOWN_PRICE`.
 - Thinking off is only valid at effort `high` or below (`EFFORTS_WITHOUT_THINKING`); enforce it in both UI and server.
+- Positions are validated with `illegalPositionReason` (shared) before any engine sees them: chess.js accepts a FEN whose side not to move is in check, and Stockfish crashes on it. Native Stockfish only ever gets `chess.fen()`, never the raw string.
+- `app.js` keeps `plies` (verbose history) instead of calling `chess.history()`, which replays the whole game each call.
 - Jev favors early options, so option order is shuffled every turn. `describeMove` plays and undoes on the live game; it must leave history untouched (tested).
 - Security: bind `127.0.0.1`, keep the Host allowlist, Origin check, `application/json`-only POST and strict CSP (no inline script or style). Render model text with `textContent` or `esc()`.
 

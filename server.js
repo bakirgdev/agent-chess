@@ -6,6 +6,7 @@ import { httpError } from './errors.js';
 import * as jev from './jev.js';
 import * as claude from './claude.js';
 import { nativeEngine } from './analysis.js';
+import { illegalPositionReason } from './public/chessutil.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 // Hard cap on what one server run may spend across all engines; restart to reset.
@@ -25,6 +26,9 @@ const TYPES = {
 };
 // Per native search; short enough that the eval bar keeps up with the game.
 const EVAL_MOVETIME_MS = 300;
+// The app sends evals one at a time; this only stops a runaway client from queueing searches without bound.
+const MAX_EVALS = 4;
+const JSON_LIMIT = 64 * 1024;
 
 // The API spends real money, so only this app's own page may call it: the Host check defeats DNS
 // rebinding, and requiring a JSON content type forces a CORS preflight that other sites never pass.
@@ -44,6 +48,7 @@ const JEV_ENGINE = { id: 'jev', label: 'Jev', anthropic: false, model: jev.MODEL
 let spentUsd = 0;
 // Moves run one at a time so concurrent requests (two tabs) can't each spend the remaining budget.
 let queue = Promise.resolve();
+let evalsInFlight = 0;
 
 function send(res, status, body, type = 'application/json') {
   // WebAssembly streaming compilation rejects a charset parameter on application/wasm.
@@ -52,12 +57,13 @@ function send(res, status, body, type = 'application/json') {
   res.end(type === 'application/json' ? JSON.stringify(body) : body);
 }
 
-async function readJson(req, limit = 64 * 1024) {
+async function readJson(req) {
+  if (!req.headers['content-type']?.startsWith('application/json')) throw httpError(415, 'Content-Type must be application/json');
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw httpError(413, 'Body too large');
+    if (size > JSON_LIMIT) throw httpError(413, 'Body too large');
     chunks.push(chunk);
   }
   let body;
@@ -70,18 +76,27 @@ async function readJson(req, limit = 64 * 1024) {
   return body;
 }
 
-// Rebuild the game from the start position (standard unless `fen` is given) and the SAN history,
-// so the server, not the client, decides what is legal.
-function replay(fen, moves) {
+// chess.js is lenient about what it parses (whitespace variants, a side in check that cannot be);
+// Stockfish is not, so callers must send `chess.fen()` onward, never the raw string.
+function loadFen(fen) {
   if (fen !== undefined && (typeof fen !== 'string' || fen.length > 100)) throw httpError(400, 'fen must be a string of at most 100 characters');
-  if (!Array.isArray(moves) || moves.length > 1000 || !moves.every((m) => typeof m === 'string')) {
-    throw httpError(400, 'moves must be an array of SAN strings');
-  }
   let chess;
   try {
     chess = new Chess(fen);
   } catch (err) {
     throw httpError(400, err.message);
+  }
+  const reason = illegalPositionReason(chess);
+  if (reason) throw httpError(400, `Illegal position: ${reason}`);
+  return chess;
+}
+
+// Rebuild the game from the start position (standard unless `fen` is given) and the SAN history,
+// so the server, not the client, decides what is legal.
+function replay(fen, moves) {
+  const chess = loadFen(fen);
+  if (!Array.isArray(moves) || moves.length > 1000 || !moves.every((m) => typeof m === 'string')) {
+    throw httpError(400, 'moves must be an array of SAN strings');
   }
   for (const san of moves) {
     try {
@@ -94,7 +109,7 @@ function replay(fen, moves) {
   return chess;
 }
 
-async function parsePlayer(player) {
+async function resolvePlayer(player) {
   if (player?.engine === 'jev') return { engine: JEV_ENGINE, settings: {} };
   const engine = (await claude.listEngines()).find((e) => e.id === player?.engine);
   if (!engine) throw httpError(400, `Unknown engine: ${player?.engine}`);
@@ -130,14 +145,13 @@ async function decide(chess, { engine, settings }) {
 }
 
 async function handleMove(req, res) {
-  if (!req.headers['content-type']?.startsWith('application/json')) throw httpError(415, 'Content-Type must be application/json');
   let clientGone = false;
   res.on('close', () => {
     clientGone = !res.writableFinished;
   });
   const body = await readJson(req);
   const chess = replay(body.fen, body.moves);
-  const player = await parsePlayer(body.player);
+  const player = await resolvePlayer(body.player);
 
   // A call already running is finished and billed even if the client leaves; a queued one is skipped.
   const turn = queue.then(async () => {
@@ -153,17 +167,18 @@ async function handleMove(req, res) {
 }
 
 async function handleEval(req, res) {
-  if (!req.headers['content-type']?.startsWith('application/json')) throw httpError(415, 'Content-Type must be application/json');
   const { fen } = await readJson(req);
-  if (typeof fen !== 'string' || fen.length > 100) throw httpError(400, 'fen must be a string of at most 100 characters');
-  try {
-    new Chess(fen);
-  } catch (err) {
-    throw httpError(400, err.message);
-  }
+  if (typeof fen !== 'string') throw httpError(400, 'fen must be a string of at most 100 characters');
+  const chess = loadFen(fen);
   const engine = await nativeEngine();
   if (!engine) throw httpError(503, 'Native Stockfish is not installed (brew install stockfish)');
-  send(res, 200, await engine.analyse(fen, { movetime: EVAL_MOVETIME_MS, multipv: 2 }));
+  if (evalsInFlight >= MAX_EVALS) throw httpError(429, 'Too many analysis requests');
+  evalsInFlight++;
+  try {
+    send(res, 200, await engine.analyse(chess.fen(), { movetime: EVAL_MOVETIME_MS, multipv: 2 }));
+  } finally {
+    evalsInFlight--;
+  }
 }
 
 async function handleConfig(res) {

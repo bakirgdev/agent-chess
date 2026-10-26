@@ -11,11 +11,16 @@ const THREADS = Math.max(1, Math.min(4, availableParallelism() - 1));
 
 let enginePromise;
 
-// Resolves to a UCI client, or null when Stockfish isn't installed. One process serves the whole run.
+// Resolves to a UCI client, or null when Stockfish is missing, fails the handshake or exits early.
+// One process serves the whole run.
 export function nativeEngine() {
   enginePromise ??= new Promise((resolve) => {
     const proc = spawn(BIN, [], { stdio: ['pipe', 'pipe', 'ignore'] });
-    const uci = uciClient((cmd) => proc.stdin.write(`${cmd}\n`));
+    const uci = uciClient((cmd) => {
+      // Fail requests queued behind a crash right away instead of writing to a dead pipe.
+      if (proc.exitCode !== null || proc.signalCode !== null || proc.stdin.destroyed) throw new Error('Stockfish is not running');
+      proc.stdin.write(`${cmd}\n`);
+    });
     let ready = false;
     const timer = setTimeout(() => {
       console.error(`${BIN} did not answer the UCI handshake; native analysis is off`);

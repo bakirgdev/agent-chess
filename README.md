@@ -87,6 +87,7 @@ npm test   # node:test: rules, custom start positions, request validation, secur
 | `public/app.js` | UI: game loop, board, human input, move browsing, settings (vanilla ES modules, no build step) |
 | `public/sound.js` | Move sounds synthesized with WebAudio |
 | `public/uci.js` | UCI client shared by both Stockfish backends |
+| `public/chessutil.js` | Helpers shared by server and browser: move numbering, illegal-position check |
 | `analysis.js` | Optional native Stockfish process behind `POST /api/eval` |
 
 ## License
