@@ -337,6 +337,8 @@ function grade(i) {
   if (!a || !b || !m) return null;
   if (a.legal === 1) return { kind: 'forced', loss: 0 };
   if (m.lan === a.best) return { kind: a.gap >= 15 ? 'great' : 'best', loss: 0 };
+  // Any mate in one is best, even when Stockfish happened to list a different mating move first.
+  if (m.san.endsWith('#')) return { kind: 'best', loss: 0 };
   const loss = Math.max(0, m.color === 'w' ? a.wp - b.wp : b.wp - a.wp);
   return { kind: LOSS_GRADES.find(([max]) => loss <= max)[1], loss };
 }

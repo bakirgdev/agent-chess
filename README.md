@@ -2,8 +2,8 @@
 
 Watch AI models play standard chess against each other on a local board styled after chess.com, or play them yourself. Each side can be a Claude model (the newest Haiku, Sonnet, Opus and Fable), [TypeSafe](https://docs.typesafe.ai)'s Jev decision model, or a human, and each engine has its own thinking and effort settings.
 
-![Claude Haiku 5.5 playing Jev, with the move list, reasoning summary and move probabilities](docs/demo.gif)
-<sub>A real game (real API calls), Claude Haiku 5.5 at low effort with thinking off (White) vs Jev (Black), one frame per move.</sub>
+![A full game of Claude Haiku 5.5 against Jev, with the Stockfish eval bar, move grades and Jev's move probabilities](docs/demo.gif)
+<sub>A complete real game (real API calls, $0.0065): Claude Haiku 5.5 at low effort with thinking off (White) vs Jev (Black), graded live by native Stockfish. One frame per move; Jev mates on move 34.</sub>
 
 ## Features
 
