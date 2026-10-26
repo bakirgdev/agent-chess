@@ -161,7 +161,8 @@ button, select { font: inherit; color: inherit; }
 .cand.pick .san { color: var(--green); }
 .stats { margin: 0; padding: 4px 16px 10px; color: var(--muted); font-size: 13px; }
 .controls { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
-.controls .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.controls .row { display: grid; grid-template-columns: 1.25fr 1fr 1fr 1.25fr; gap: 6px; }
+.controls .row .btn { padding-inline: 4px; white-space: nowrap; }
 .prefs { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 14px; padding: 2px 4px 0; }
 .delay { display: flex; align-items: center; gap: 10px; }
 .delay select { background: var(--btn); border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-weight: 700; color: #fff; }

@@ -1,6 +1,6 @@
 # Agent Chess
 
-Local web app: two AI engines (Claude models, TypeSafe Jev) play chess in the browser. README.md covers features, setup and architecture; this file covers what to know before changing code.
+Local web app: AI engines (Claude models, TypeSafe Jev) or a human play chess in the browser. README.md covers features, setup and architecture; this file covers what to know before changing code.
 
 ## Commands
 
@@ -25,12 +25,13 @@ npm test           # node:test, never touches a paid API
 | `claude.js` | Model discovery from the Models API, settings validation, prompt, structured output, cost |
 | `jev.js` | Jev option facts per legal move, request, retries |
 | `errors.js` | `httpError(status, message, extra)`, the only error shape the server sends |
-| `public/app.js` | Game loop, board rendering and animation, settings UI, PGN |
+| `public/app.js` | Game loop, board rendering and animation, human input, move browsing, FEN/PGN load, settings UI, PGN |
+| `public/sound.js` | WebAudio move sounds and the mute setting |
 | `test/` | `server.test.js` spawns the server in mock mode; `engines.test.js` unit-tests prompts and validation |
 
 ## Invariants
 
-- The browser owns the game loop and posts the full SAN history; the server replays it and decides legality. Never trust a client-sent position or an engine's move without checking it against `chess.moves()`.
+- The browser owns the game loop and posts the start FEN plus the full SAN history; the server replays it and decides legality. The Human engine exists only in the browser (`HUMAN` in `app.js`); its moves reach the server inside the next engine request's history. Never trust a client-sent position or an engine's move without checking it against `chess.moves()`.
 - Every real move costs money. Keep `BUDGET_USD` enforced, count billed failures (`err.costUsd`), size Claude's `max_tokens` from the remaining budget, and keep moves serialized through `queue`.
 - Claude model ids, capabilities and options come from the Models API at runtime. Never hardcode a model list; only `PRICES` in `claude.js` is a table, and unknown models fall back to `UNKNOWN_PRICE`.
 - Thinking off is only valid at effort `high` or below (`EFFORTS_WITHOUT_THINKING`); enforce it in both UI and server.

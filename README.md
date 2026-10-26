@@ -1,17 +1,20 @@
 # Agent Chess
 
-Watch AI models play standard chess against each other on a local board styled after chess.com. Each side can be a Claude model (the newest Haiku, Sonnet, Opus and Fable) or [TypeSafe](https://docs.typesafe.ai)'s Jev decision model, each with its own thinking and effort settings.
+Watch AI models play standard chess against each other on a local board styled after chess.com, or play them yourself. Each side can be a Claude model (the newest Haiku, Sonnet, Opus and Fable), [TypeSafe](https://docs.typesafe.ai)'s Jev decision model, or a human, and each engine has its own thinking and effort settings.
 
-![Agent Chess board with move list and engine panel](docs/screenshot.png)
-<sub>Screenshot taken in mock mode (random moves, no API calls).</sub>
+![Claude Haiku 5.5 playing Jev, with the move list, reasoning summary and move probabilities](docs/demo.gif)
+<sub>A real game (real API calls), Claude Haiku 5.5 at low effort with thinking off (White) vs Jev (Black), one frame per move.</sub>
 
 ## Features
 
 - Full chess rules via [chess.js](https://github.com/jhlywa/chess.js): castling, en passant, promotion, check, checkmate, stalemate, threefold repetition, insufficient material, 50-move rule.
 - Per-side engine choice. Claude options come from the Anthropic Models API, so each model shows only what it supports: adaptive thinking or off, effort `low` to `max`, fast mode on Opus.
-- Live view: animated moves, last-move and check highlights, captured pieces and material count, thinking time per side, move list, the engine's reasoning summary (Claude) or move probabilities (Jev).
+- Play yourself: pick **Human** for either side, then click or drag pieces (legal-move dots, promotion picker) or type the move (`Nf3`, `e8=Q`, `g1f3`). Human vs human works too.
+- Live view: animated moves, last-move and check highlights, captured pieces and material count, thinking time per side, move list, the engine's reasoning summary (Claude) or move probabilities (Jev), and move sounds (with a switch).
+- Browse the game: click any move, or use ←/→, Home and End, while the game keeps going.
+- Start from any position: paste a FEN or a PGN, and the game continues from its last position.
 - Spend cap: the server refuses to spend more than `BUDGET_USD` per run, and sizes each Claude call so a single move can't overshoot it.
-- Copy the game as PGN.
+- Copy the game as PGN (with the `FEN` header when it started from a custom position).
 
 ## Quick start
 
@@ -25,7 +28,7 @@ cp .env.example .env   # add ANTHROPIC_API_KEY and/or TYPESAFE_API_KEY
 npm start              # http://localhost:3000
 ```
 
-Pick an engine for White and Black, then press **Start**. Without keys you can still try the UI: `MOCK=1 npm start` plays random legal moves for free.
+Pick an engine (or Human) for White and Black, then press **Start**. Without keys you can still try the UI: `MOCK=1 npm start` makes every engine play random legal moves for free, and Human play needs no key at all.
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -44,13 +47,15 @@ browser (public/app.js)            server.js                         engines
   chess.js for display  ◀─ move ──   validate settings, budget      ◀──  one legal move
 ```
 
-- The browser owns the game loop and sends the full move history each turn. The server rebuilds the position from it, so legality is always decided server-side, and the move an engine returns is checked against the legal moves before it is accepted.
+- The browser owns the game loop and sends the start position (FEN) and the full move history each turn. The server rebuilds the position from them, so legality is always decided server-side, and the move an engine returns is checked against the legal moves before it is accepted. Human moves never reach the server on their own; they arrive in the history of the next engine request.
 - **Claude** (`claude.js`) gets the position as FEN, a text diagram, the moves so far and the list of legal moves. Its answer is constrained by structured outputs: a JSON schema whose `move` field is an enum of the legal moves.
 - **Jev** (`jev.js`) is a decision model, not a text generator: it picks one option from a `choice` question whose options are the legal moves. It doesn't search ahead, so each option carries precomputed facts (captures, check, mate, piece safety, likely material result, threats, development, repetition, mate-in-one danger). Option order is shuffled each turn because Jev favors early options.
 
 ### Cost
 
-Rough per-move cost at low effort: Haiku 5.5 about $0.0001, Sonnet 5.5 about $0.002, Opus 5.5 about $0.005, Fable 5.1 about $0.012, Jev about $0.0001. Higher effort and thinking can multiply this many times over: a single max-effort move can use tens of thousands of tokens. The budget cap is the backstop.
+Measured per-move cost in the opening at low effort: Haiku 5.5 about $0.0001, Sonnet 5.5 about $0.002, Opus 5.5 about $0.004 ($0.007 in fast mode), Fable 5.1 about $0.008, Jev about $0.0001. Higher effort and thinking can multiply this many times over: in our tests a single max-effort Opus 5.5 move in the middlegame used 29,914 output tokens ($0.60). The budget cap is the backstop.
+
+Adaptive thinking decides for itself whether to think. In our tests the opening moves came back without a reasoning summary at low to high effort; `max` effort reliably shows one.
 
 ## Security
 
@@ -66,15 +71,18 @@ Keep your keys in `.env` (gitignored).
 ## Development
 
 ```sh
-npm test   # node:test: rules, request validation, security checks, engine prompts (no API calls)
+npm test   # node:test: rules, custom start positions, request validation, security checks, engine prompts (no API calls)
 ```
+
+`CLAUDE.md` lists the invariants to keep (money, legality, security) for anyone changing the code with an AI agent.
 
 | File | Role |
 |---|---|
 | `server.js` | HTTP server, static files, move/config API, budget |
 | `claude.js` | Anthropic engines: model discovery, settings validation, prompt, cost |
 | `jev.js` | TypeSafe Jev engine: option facts, request, retries |
-| `public/` | UI (vanilla ES modules, no build step) |
+| `public/app.js` | UI: game loop, board, human input, move browsing, settings (vanilla ES modules, no build step) |
+| `public/sound.js` | Move sounds synthesized with WebAudio |
 
 ## License
 
