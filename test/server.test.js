@@ -11,7 +11,9 @@ let server;
 
 before(async () => {
   // Mock mode with no usable keys: no test can reach a paid API.
-  const env = { ...process.env, MOCK: '1', PORT: String(PORT), ANTHROPIC_API_KEY: 'test', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' };
+  const env = { ...process.env, MOCK: '1', PORT: String(PORT), ANTHROPIC_API_KEY: 'test', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+    // Pretend native Stockfish is missing, so results don't depend on what this machine has installed.
+    STOCKFISH_PATH: '/nonexistent/stockfish' };
   delete env.TYPESAFE_API_KEY;
   server = spawn(process.execPath, ['server.js'], { cwd: new URL('..', import.meta.url), env, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.setEncoding('utf8');
@@ -116,6 +118,16 @@ test('rejects malformed bodies', async () => {
 });
 
 // A web page can send a text/plain POST without a CORS preflight; only JSON is accepted.
+test('native analysis reports itself unavailable when Stockfish is missing', async () => {
+  assert.equal(JSON.parse((await request('GET', '/api/config')).body).stockfish, false);
+  const evalPost = (body, headers = {}) =>
+    request('POST', '/api/eval', { headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const fen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+  assert.equal((await evalPost({ fen })).status, 503);
+  assert.equal((await evalPost({ fen: 'not a fen' })).status, 400);
+  assert.equal((await evalPost({ fen }, { origin: 'https://evil.example' })).status, 403);
+});
+
 test('refuses requests that skip the CORS preflight', async () => {
   const res = await request('POST', '/api/move', {
     headers: { 'content-type': 'text/plain' },

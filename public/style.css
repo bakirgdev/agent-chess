@@ -13,11 +13,14 @@
   --side: 380px;
   --bar: 52px;
   --gap: 16px;
-  --board: min(calc(100vh - 2 * var(--bar) - 32px), calc(100vw - var(--side) - 3 * var(--gap)));
+  --evalw: 0px;
+  --board: min(calc(100vh - 2 * var(--bar) - 32px), calc(100vw - var(--side) - 3 * var(--gap) - var(--evalw)));
 }
 @supports (height: 100dvh) {
-  :root { --board: min(calc(100dvh - 2 * var(--bar) - 32px), calc(100vw - var(--side) - 3 * var(--gap))); }
+  :root { --board: min(calc(100dvh - 2 * var(--bar) - 32px), calc(100vw - var(--side) - 3 * var(--gap) - var(--evalw))); }
 }
+/* Eval bar (22px) plus the board row's 6px gap; the board shrinks by this much while analysis is on. */
+:root.with-eval { --evalw: 28px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
@@ -39,7 +42,15 @@ button, select { font: inherit; color: inherit; }
   gap: var(--gap);
   padding: 16px var(--gap);
 }
-.board-col { width: var(--board); flex: none; }
+.board-col { width: calc(var(--board) + var(--evalw)); flex: none; }
+.board-row { display: flex; gap: 6px; }
+.evalbar { position: relative; width: 22px; flex: none; border-radius: 3px; overflow: hidden; background: #403D39; display: flex; flex-direction: column; justify-content: flex-end; }
+.evalbar[hidden] { display: none; }
+.evalbar.flipped { justify-content: flex-start; }
+.evalfill { background: #F1F1F1; height: 50%; transition: height .4s ease-out; }
+.evallabel { position: absolute; left: 0; right: 0; bottom: 4px; text-align: center; font-size: 10px; font-weight: 800; color: #F1F1F1; }
+.evallabel.on-white { color: #403D39; }
+.evallabel.at-top { top: 4px; bottom: auto; }
 .side {
   width: var(--side);
   flex: none;
@@ -112,6 +123,10 @@ button, select { font: inherit; color: inherit; }
 .board.interactive { cursor: pointer; touch-action: none; }
 .sq.l.sel { background: #F5F682; }
 .sq.d.sel { background: #B9CA43; }
+.badge {
+  position: absolute; top: -1.2cqw; right: -1.2cqw; z-index: 5; width: 4.6cqw; height: 4.6cqw; border-radius: 50%;
+  display: grid; place-items: center; font-size: 2.5cqw; font-weight: 900; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.45); pointer-events: none;
+}
 .sq.tgt::after, .sq.cap::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
 .sq.tgt::after { background: radial-gradient(circle, rgba(0,0,0,.16) 22%, transparent 23%); }
 .sq.cap::after { background: radial-gradient(circle, transparent 72%, rgba(0,0,0,.16) 73%); }
@@ -148,6 +163,17 @@ button, select { font: inherit; color: inherit; }
 .mv:hover { background: rgba(255,255,255,.08); }
 .mv.last { background: var(--pill); }
 .mv.viewing { background: var(--green); color: var(--panel); }
+.grade { margin-left: 4px; font-weight: 900; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* chess.com's review colors */
+.g-forced, .g-good { --g: #96AF8B; }
+.g-great { --g: #749BBF; }
+.g-best, .g-excellent { --g: #96BC4B; }
+.g-inaccuracy { --g: #F7C045; }
+.g-mistake { --g: #E58F2A; }
+.g-blunder { --g: #CA3431; }
+.grade { color: var(--g); }
+.badge { background: var(--g); }
 .mres { padding: 10px 16px; text-align: center; color: var(--muted); font-weight: 700; border-top: 1px solid rgba(255,255,255,.06); margin-top: 4px; }
 .mres b { color: #fff; }
 .think { padding: 10px 16px 6px; border-top: 1px solid rgba(255,255,255,.06); }
@@ -165,7 +191,8 @@ button, select { font: inherit; color: inherit; }
 .controls .row .btn { padding-inline: 4px; white-space: nowrap; }
 .prefs { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 14px; padding: 2px 4px 0; }
 .delay { display: flex; align-items: center; gap: 10px; }
-.delay select { background: var(--btn); border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-weight: 700; color: #fff; }
+.delay select, .analysis { background: var(--btn); border: 0; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-weight: 700; color: #fff; }
+.analysis option:disabled { color: #777; }
 
 /* players panel */
 .players { margin: 0 12px 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -218,12 +245,12 @@ button, select { font: inherit; color: inherit; }
 
 @media (max-width: 899px) {
   /* Height-bound too, so a landscape phone still shows the whole board and both bars. */
-  :root { --bar: 56px; --board: min(calc(100vw - 16px), max(280px, calc(100vh - 2 * var(--bar) - 16px))); }
+  :root { --bar: 56px; --board: min(calc(100vw - 16px - var(--evalw)), max(280px, calc(100vh - 2 * var(--bar) - 16px))); }
   @supports (height: 100dvh) {
-    :root { --board: min(calc(100vw - 16px), max(280px, calc(100dvh - 2 * var(--bar) - 16px))); }
+    :root { --board: min(calc(100vw - 16px - var(--evalw)), max(280px, calc(100dvh - 2 * var(--bar) - 16px))); }
   }
   .app { flex-direction: column; align-items: center; justify-content: flex-start; gap: 12px; padding: 8px; }
-  .board-col { width: var(--board); }
+  .board-col { width: calc(var(--board) + var(--evalw)); }
   .player-bar { padding-inline: 2px; }
   .side { width: 100%; max-width: 640px; height: auto; min-height: 0; }
   .moves { flex: none; height: 180px; }

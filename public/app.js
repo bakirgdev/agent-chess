@@ -1,5 +1,6 @@
 import { Chess, DEFAULT_POSITION, validateFen } from '/vendor/chess.js';
 import * as sound from '/sound.js';
+import { uciClient } from '/uci.js';
 
 const $ = (id) => document.getElementById(id);
 const FILES = 'abcdefgh';
@@ -20,7 +21,7 @@ const FALLBACK_CONFIG = {
   engines: [{ id: 'jev', label: 'Jev', anthropic: false, model: 'jev-latest' }, HUMAN],
   effortsWithoutThinking: ['low', 'medium', 'high'],
   budgetTokensOptions: [1024, 4096, 16384, 32768],
-  budgetUsd: null, spentUsd: 0,
+  budgetUsd: null, spentUsd: 0, stockfish: false,
 };
 const STORE_KEY = 'agent-chess.players.v1';
 let config = FALLBACK_CONFIG;
@@ -62,6 +63,7 @@ function resetGame(game = new Chess()) {
   hideBanner();
   buildBoard();
   if (lastResult) { state = 'over'; showResult(lastResult); }
+  restartAnalysis();
   renderAll();
 }
 
@@ -116,8 +118,18 @@ function buildBoard() {
 }
 function updateHighlights(pos = shown()) {
   for (const d of squareEls.values()) d.classList.remove('hl', 'check');
-  const last = pos.history({ verbose: true }).at(-1);
+  for (const b of el.board.querySelectorAll('.badge')) b.remove();
+  const played = pos.history({ verbose: true });
+  const last = played.at(-1);
   if (last) { squareEls.get(last.from).classList.add('hl'); squareEls.get(last.to).classList.add('hl'); }
+  const g = last && grade(played.length - 1, chess.history({ verbose: true }));
+  if (g) {
+    const badge = document.createElement('span');
+    badge.className = `badge g-${g.kind}`;
+    badge.textContent = GRADES[g.kind][0];
+    badge.title = GRADES[g.kind][1];
+    squareEls.get(last.to).append(badge);
+  }
   if (pos.inCheck()) {
     for (const rank of pos.board()) for (const p of rank) {
       if (p && p.type === 'k' && p.color === pos.turn()) squareEls.get(p.square).classList.add('check');
@@ -250,9 +262,158 @@ function view(ply) {
   viewPly = next;
   selected = null;
   buildBoard();
+  renderEvalBar();
   renderMoves();
   renderStatus();
   renderControls();
+}
+
+/* ---------- analysis: eval bar and move grades ---------- */
+// 'off', 'browser' (Stockfish lite WASM in a worker) or 'native' (the server's Stockfish, e.g. `brew install stockfish`).
+const ANALYSIS_KEY = 'agent-chess.analysis.v1';
+const BROWSER_MOVETIME_MS = 400;
+const GRADES = {
+  forced: ['\u25A1', 'Forced'], great: ['!', 'Great move'], best: ['\u2605', 'Best move'], excellent: ['\u2713', 'Excellent'],
+  good: ['\u2713', 'Good'], inaccuracy: ['?!', 'Inaccuracy'], mistake: ['?', 'Mistake'], blunder: ['??', 'Blunder'],
+};
+let analysisMode = 'off', evals = [], analysisGen = 0, analysing = false, worker = null, browserUci = null;
+
+// Lichess's win-chance curve: a line's score (from the side to move) as 0..100.
+const winChance = (l) => (l.mate != null ? (l.mate > 0 ? 100 : 0) : 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * l.cp)) - 1));
+
+function browserEngine() {
+  if (!browserUci) {
+    worker = new Worker('/vendor/stockfish/stockfish-19-lite-single.js');
+    browserUci = uciClient((cmd) => worker.postMessage(cmd));
+    worker.onmessage = (ev) => browserUci.feed(String(ev.data));
+    worker.onerror = (ev) => browserUci.fail(new Error(ev.message || 'Stockfish worker failed to load'));
+    worker.postMessage('uci');
+  }
+  return browserUci;
+}
+function stopBrowserEngine() {
+  worker?.terminate();
+  browserUci?.fail(new Error('Analysis engine stopped'));
+  worker = null;
+  browserUci = null;
+}
+async function search(fen) {
+  if (analysisMode === 'browser') return browserEngine().analyse(fen, { movetime: BROWSER_MOVETIME_MS, multipv: 2 });
+  const res = await fetch('/api/eval', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fen }) });
+  let body = null;
+  try { body = await res.json(); } catch { /* handled below */ }
+  if (!res.ok || !Array.isArray(body?.lines)) throw new Error(body?.error || `Analysis failed (${res.status})`);
+  return body;
+}
+// White's win chance and a label for one position, plus what grading the move played from it needs.
+async function evaluate(pos) {
+  const legal = pos.moves().length;
+  if (pos.isCheckmate()) return pos.turn() === 'w' ? { wp: 0, label: '0-1', legal } : { wp: 100, label: '1-0', legal };
+  if (pos.isDraw()) return { wp: 50, label: '\u00BD-\u00BD', legal };
+  const [top, second] = (await search(pos.fen())).lines;
+  if (!top) throw new Error('Stockfish returned no evaluation');
+  const sign = pos.turn() === 'w' ? 1 : -1;
+  const mover = winChance(top);
+  const label = top.mate != null
+    ? `${top.mate * sign > 0 ? '' : '-'}M${Math.abs(top.mate)}`
+    : `${top.cp * sign >= 0 ? '+' : ''}${((top.cp * sign) / 100).toFixed(1)}`;
+  return { wp: sign > 0 ? mover : 100 - mover, label, legal, best: top.move, gap: second ? mover - winChance(second) : 0 };
+}
+// Grade of ply i from the mover's loss in win chance, with lichess-style thresholds and chess.com names.
+// "Great" is the engine's best move when the second-best move is much worse.
+function grade(i, history) {
+  const a = evals[i], b = evals[i + 1], m = history[i];
+  if (!a || !b || !m) return null;
+  if (a.legal === 1) return { kind: 'forced', loss: 0 };
+  if (m.lan === a.best) return { kind: a.gap >= 15 ? 'great' : 'best', loss: 0 };
+  const loss = Math.max(0, m.color === 'w' ? a.wp - b.wp : b.wp - a.wp);
+  const kind = loss <= 2 ? 'excellent' : loss <= 5 ? 'good' : loss <= 10 ? 'inaccuracy' : loss <= 20 ? 'mistake' : 'blunder';
+  return { kind, loss };
+}
+// Lichess's per-move accuracy formula, averaged per side (forced moves don't count).
+function accuracy(history) {
+  const per = { w: [], b: [] };
+  history.forEach((m, i) => {
+    const g = grade(i, history);
+    if (g && g.kind !== 'forced') per[m.color].push(Math.min(100, Math.max(0, 103.1668 * Math.exp(-0.04354 * g.loss) - 3.1669)));
+  });
+  const avg = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null);
+  return { w: avg(per.w), b: avg(per.b) };
+}
+async function pumpAnalysis() {
+  if (analysing || analysisMode === 'off') return;
+  analysing = true;
+  const myGen = analysisGen;
+  try {
+    for (;;) {
+      // The live position first, so the bar keeps up; then any earlier gaps (e.g. a loaded PGN).
+      const n = chess.history().length;
+      let ply = evals[n] ? -1 : n;
+      for (let i = 0; ply < 0 && i < n; i++) if (!evals[i]) ply = i;
+      if (ply < 0) break;
+      const result = await evaluate(positionAt(ply));
+      if (myGen !== analysisGen) return;
+      evals[ply] = result;
+      renderAnalysis();
+    }
+  } catch (err) {
+    if (myGen !== analysisGen) return;
+    showBanner(`Analysis stopped: ${err.message}`);
+    setAnalysisMode('off', { save: false });
+  } finally {
+    if (myGen === analysisGen) analysing = false;
+  }
+}
+function restartAnalysis() {
+  analysisGen++;
+  analysing = false;
+  evals = [];
+  renderAnalysis();
+  pumpAnalysis();
+}
+function setAnalysisMode(mode, { save = true } = {}) {
+  if (mode !== 'browser') stopBrowserEngine();
+  analysisMode = mode;
+  $('analysis').value = mode;
+  if (save) {
+    try { localStorage.setItem(ANALYSIS_KEY, mode); } catch { /* storage unavailable: setting lasts for this page only */ }
+  }
+  restartAnalysis();
+}
+function initAnalysis() {
+  const native = $('analysis').querySelector('option[value="native"]');
+  native.disabled = !config.stockfish;
+  $('analysis').title = config.stockfish
+    ? 'Browser: Stockfish lite in this tab. Native: the Stockfish installed on this machine.'
+    : 'Browser: Stockfish lite in this tab. Native needs: brew install stockfish';
+  let saved = null;
+  try { saved = localStorage.getItem(ANALYSIS_KEY); } catch { /* storage unavailable: use the default */ }
+  const usable = saved === 'off' || saved === 'browser' || (saved === 'native' && config.stockfish);
+  setAnalysisMode(usable ? saved : config.stockfish ? 'native' : 'browser', { save: false });
+}
+function renderEvalBar() {
+  const bar = $('evalbar');
+  bar.hidden = analysisMode === 'off';
+  if (bar.hidden) return;
+  // Until the shown position is evaluated, keep showing the last known one instead of jumping to even.
+  let e = null;
+  for (let k = viewPly ?? chess.history().length; k >= 0 && !e; k--) e = evals[k] ?? null;
+  const wp = e ? e.wp : 50, whiteLeads = wp >= 50;
+  bar.classList.toggle('flipped', flipped);
+  bar.querySelector('.evalfill').style.height = `${wp}%`;
+  const label = bar.querySelector('.evallabel');
+  label.textContent = e ? e.label.replace(/^[+-]/, '') : '';
+  label.classList.toggle('on-white', whiteLeads);
+  label.classList.toggle('at-top', whiteLeads === flipped);
+  bar.setAttribute('aria-valuenow', String(Math.round(wp)));
+  bar.setAttribute('aria-valuetext', e ? `Evaluation ${e.label}` : 'Evaluating');
+}
+function renderAnalysis() {
+  document.documentElement.classList.toggle('with-eval', analysisMode !== 'off');
+  renderEvalBar();
+  renderMoves();
+  renderStats();
+  if (squareEls.size) updateHighlights();
 }
 
 /* ---------- config ---------- */
@@ -446,14 +607,17 @@ function renderMoves() {
   // A loaded position can start at any move number, with Black to move.
   const [, side, , , , fullmove] = startFen.split(' ');
   const offset = side === 'b' ? 1 : 0;
+  const history = analysisMode === 'off' ? [] : chess.history({ verbose: true });
   for (let i = 0; i < moveLog.length + offset; i += 2) {
     const cell = (k) => {
       const j = k - offset, m = moveLog[j];
       if (!m) return '<span></span>';
       const tip = m.conf == null ? (m.model || 'unknown model') : `Confidence: ${Math.round(m.conf * 100)}%`;
       const viewing = viewPly === j + 1;
+      const g = analysisMode === 'off' ? null : grade(j, history);
+      const mark = g ? `<span class="grade g-${g.kind}" aria-hidden="true">${GRADES[g.kind][0]}</span><span class="sr"> (${GRADES[g.kind][1]})</span>` : '';
       const cls = `mv${j === moveLog.length - 1 ? ' last' : ''}${viewing ? ' viewing' : ''}`;
-      return `<button type="button" class="${cls}" data-ply="${j + 1}" title="${esc(tip)}"${viewing ? ' aria-current="true"' : ''}>${esc(m.san)}</button>`;
+      return `<button type="button" class="${cls}" data-ply="${j + 1}" title="${esc(tip)}"${viewing ? ' aria-current="true"' : ''}>${esc(m.san)}${mark}</button>`;
     };
     rows.push(`<div class="mrow"><span class="mnum">${Number(fullmove) + i / 2}.</span>${cell(i)}${cell(i + 1)}</div>`);
   }
@@ -486,7 +650,12 @@ function renderThink() {
 function renderStats() {
   const n = moveLog.length;
   const avg = n ? Math.round(totals.ms / n) : 0;
-  el.stats.textContent = `Moves: ${n} · Spent: $${spent.toFixed(4)}${config.budgetUsd == null ? '' : ` of $${Number(config.budgetUsd).toFixed(4)}`} · Avg: ${avg} ms/move`;
+  let acc = '';
+  if (analysisMode !== 'off') {
+    const a = accuracy(chess.history({ verbose: true }));
+    if (a.w != null || a.b != null) acc = ` · Accuracy: White ${a.w ?? '-'}%, Black ${a.b ?? '-'}%`;
+  }
+  el.stats.textContent = `Moves: ${n} · Spent: $${spent.toFixed(4)}${config.budgetUsd == null ? '' : ` of $${Number(config.budgetUsd).toFixed(4)}`} · Avg: ${avg} ms/move${acc}`;
 }
 function sideName(c) { return c === 'w' ? 'White' : 'Black'; }
 function renderStatus() {
@@ -518,7 +687,7 @@ function renderBars() {
   renderBar($('bar-top'), top);
   renderBar($('bar-bottom'), bottom);
 }
-function renderAll() { renderBars(); renderMoves(); renderThink(); renderStats(); renderStatus(); renderControls(); }
+function renderAll() { renderBars(); renderEvalBar(); renderMoves(); renderThink(); renderStats(); renderStatus(); renderControls(); }
 
 /* ---------- game flow ---------- */
 function showBanner(msg) { el.bannerText.textContent = msg; el.banner.hidden = false; }
@@ -641,6 +810,7 @@ async function loop() {
       const out = gameOutcome();
       const castle = m.isKingsideCastle() || m.isQueensideCastle();
       sound.play(out ? 'end' : chess.inCheck() ? 'check' : m.isCapture() ? 'capture' : castle ? 'castle' : 'move');
+      pumpAnalysis();
       if (out) {
         state = 'over';
         lastResult = out;
@@ -721,7 +891,9 @@ $('btn-flip').addEventListener('click', () => {
   flipped = !flipped;
   buildBoard();
   renderBars();
+  renderEvalBar();
 });
+$('analysis').addEventListener('change', (ev) => setAnalysisMode(ev.target.value));
 el.pgn.addEventListener('click', copyPgn);
 el.moves.addEventListener('click', (ev) => {
   const b = ev.target.closest('.mv');
@@ -806,5 +978,6 @@ fetchConfig().then((c) => {
   config = { ...FALLBACK_CONFIG, ...c, engines: [...c.engines, HUMAN] };
   if (Number.isFinite(c.spentUsd)) spent = c.spentUsd;
   initPlayers();
+  initAnalysis();
   renderAll();
 }).catch((e) => console.error('Failed to load /api/config', e));

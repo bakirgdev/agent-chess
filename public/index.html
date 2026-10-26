@@ -16,6 +16,11 @@
 <main class="app">
   <section class="board-col" aria-label="Game board">
     <div class="player-bar" id="bar-top"></div>
+    <div class="board-row">
+    <div id="evalbar" class="evalbar" role="meter" aria-label="Evaluation, White's winning chances" aria-valuemin="0" aria-valuemax="100" hidden>
+      <div class="evalfill"></div>
+      <span class="evallabel"></span>
+    </div>
     <div class="board-wrap">
       <div id="board" class="board" role="group" aria-label="Chess board"></div>
       <div id="result" class="result" hidden role="dialog" aria-labelledby="result-title">
@@ -27,6 +32,7 @@
           <button id="result-new" class="btn btn-primary" type="button">New game</button>
         </div>
       </div>
+    </div>
     </div>
     <div class="player-bar" id="bar-bottom"></div>
   </section>
@@ -80,7 +86,12 @@
       </div>
       <div class="prefs">
         <label class="sw"><input type="checkbox" role="switch" id="sound" checked><span class="slider" aria-hidden="true"></span><span>Sound</span></label>
-        <label class="delay">Move delay
+        <select id="analysis" class="analysis" aria-label="Analysis engine for the eval bar and move grades">
+          <option value="off">Eval: Off</option>
+          <option value="browser">Eval: Browser</option>
+          <option value="native">Eval: Native</option>
+        </select>
+        <label class="delay">Delay
           <select id="delay" aria-label="Delay between moves">
             <option value="0">0s</option>
             <option value="500">0.5s</option>

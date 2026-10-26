@@ -5,6 +5,7 @@ import { Chess } from 'chess.js';
 import { httpError } from './errors.js';
 import * as jev from './jev.js';
 import * as claude from './claude.js';
+import { nativeEngine } from './analysis.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 // Hard cap on what one server run may spend across all engines; restart to reset.
@@ -19,7 +20,11 @@ if (!Number.isFinite(BUDGET_USD) || BUDGET_USD < 0) {
 
 const ROOT = join(import.meta.dirname, 'public');
 const VENDOR = { '/vendor/chess.js': join(import.meta.dirname, 'node_modules/chess.js/dist/esm/chess.js') };
-const TYPES = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
+const TYPES = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.txt': 'text/plain',
+};
+// Per native search; short enough that the eval bar keeps up with the game.
+const EVAL_MOVETIME_MS = 300;
 
 // The API spends real money, so only this app's own page may call it: the Host check defeats DNS
 // rebinding, and requiring a JSON content type forces a CORS preflight that other sites never pass.
@@ -27,7 +32,8 @@ const HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 const ORIGINS = new Set([...HOSTS].map((host) => `http://${host}`));
 const SECURITY_HEADERS = {
   'content-security-policy':
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; " +
+    // wasm-unsafe-eval lets the browser compile the Stockfish WASM build; it does not allow eval().
+    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; " +
     "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
@@ -40,7 +46,9 @@ let spentUsd = 0;
 let queue = Promise.resolve();
 
 function send(res, status, body, type = 'application/json') {
-  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store' });
+  // WebAssembly streaming compilation rejects a charset parameter on application/wasm.
+  const contentType = type === 'application/wasm' ? type : `${type}; charset=utf-8`;
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': contentType, 'cache-control': 'no-store' });
   res.end(type === 'application/json' ? JSON.stringify(body) : body);
 }
 
@@ -73,7 +81,7 @@ function replay(fen, moves) {
   try {
     chess = new Chess(fen);
   } catch (err) {
-    throw httpError(400, `Invalid FEN: ${err.message}`);
+    throw httpError(400, err.message);
   }
   for (const san of moves) {
     try {
@@ -144,6 +152,20 @@ async function handleMove(req, res) {
   if (result) send(res, 200, { ...result, spentUsd });
 }
 
+async function handleEval(req, res) {
+  if (!req.headers['content-type']?.startsWith('application/json')) throw httpError(415, 'Content-Type must be application/json');
+  const { fen } = await readJson(req);
+  if (typeof fen !== 'string' || fen.length > 100) throw httpError(400, 'fen must be a string of at most 100 characters');
+  try {
+    new Chess(fen);
+  } catch (err) {
+    throw httpError(400, err.message);
+  }
+  const engine = await nativeEngine();
+  if (!engine) throw httpError(503, 'Native Stockfish is not installed (brew install stockfish)');
+  send(res, 200, await engine.analyse(fen, { movetime: EVAL_MOVETIME_MS, multipv: 2 }));
+}
+
 async function handleConfig(res) {
   let claudeEngines = [];
   let anthropicError = null;
@@ -161,6 +183,7 @@ async function handleConfig(res) {
     budgetTokensOptions: claude.BUDGET_TOKENS,
     budgetUsd: BUDGET_USD,
     spentUsd,
+    stockfish: (await nativeEngine()) !== null,
   });
 }
 
@@ -188,6 +211,7 @@ createServer(async (req, res) => {
     if (!URL.canParse(req.url, 'http://localhost')) throw httpError(400, 'Malformed URL');
     const { pathname } = new URL(req.url, 'http://localhost');
     if (req.method === 'POST' && pathname === '/api/move') return await handleMove(req, res);
+    if (req.method === 'POST' && pathname === '/api/eval') return await handleEval(req, res);
     if (req.method === 'GET' && pathname === '/api/config') return await handleConfig(res);
     if (req.method === 'GET') return await serveStatic(pathname, res);
     throw httpError(405, 'Method not allowed');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Chess } from 'chess.js';
 import { buildRequest } from '../jev.js';
 import { parsePlayer, prompt, publicEngine } from '../claude.js';
+import { uciClient } from '../public/uci.js';
 
 const play = (...moves) => {
   const chess = new Chess();
@@ -74,4 +75,23 @@ test('Claude prompt numbers moves from a custom start with Black to move', () =>
   chess.move('Kd2');
   assert.match(prompt(chess), /Game so far: 40\.\.\. Ke3 41\. Rh3\+ Kd2\n/);
   assert.match(prompt(chess), /It is move 42,/);
+});
+
+test('UCI client keeps the deepest exact score per line and resolves on bestmove', async () => {
+  const sent = [];
+  const uci = uciClient((cmd) => sent.push(cmd));
+  const result = uci.analyse('8/8/8/8/8/5k2/8/K6R w - - 0 1', { movetime: 100, multipv: 2 });
+  await Promise.resolve();
+  assert.deepEqual(sent, ['setoption name MultiPV value 2', 'position fen 8/8/8/8/8/5k2/8/K6R w - - 0 1', 'go movetime 100']);
+  for (const line of [
+    'info depth 10 seldepth 12 multipv 1 score cp 520 nodes 1 pv h1h3 f3e4',
+    'info depth 11 seldepth 12 multipv 1 score cp 900 lowerbound nodes 2 pv h1h2',
+    'info depth 11 seldepth 13 multipv 1 score mate 12 nodes 3 pv h1h4 f3e3',
+    'info depth 11 seldepth 13 multipv 2 score cp 480 nodes 3 pv a1b2 f3e4',
+    'bestmove h1h4 ponder f3e3',
+  ]) uci.feed(line);
+  assert.deepEqual(await result, {
+    depth: 11,
+    lines: [{ move: 'h1h4', cp: null, mate: 12 }, { move: 'a1b2', cp: 480, mate: null }],
+  });
 });

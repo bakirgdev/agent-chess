@@ -11,6 +11,7 @@ Watch AI models play standard chess against each other on a local board styled a
 - Per-side engine choice. Claude options come from the Anthropic Models API, so each model shows only what it supports: adaptive thinking or off, effort `low` to `max`, fast mode on Opus.
 - Play yourself: pick **Human** for either side, then click or drag pieces (legal-move dots, promotion picker) or type the move (`Nf3`, `e8=Q`, `g1f3`). Human vs human works too.
 - Live view: animated moves, last-move and check highlights, captured pieces and material count, thinking time per side, move list, the engine's reasoning summary (Claude) or move probabilities (Jev), and move sounds (with a switch).
+- Eval bar and move grades like chess.com's game review: every move is marked Forced, Great, Best, Excellent, Good, Inaccuracy, Mistake or Blunder, with an approximate accuracy per side. Pick the engine under **Eval**: *Browser* runs Stockfish 19 lite (WASM, 1.8 MB) in a worker, with nothing to install; *Native* uses the Stockfish installed on your machine (`brew install stockfish`), which is stronger and faster.
 - Browse the game: click any move, or use ←/→, Home and End, while the game keeps going.
 - Start from any position: paste a FEN or a PGN, and the game continues from its last position.
 - Spend cap: the server refuses to spend more than `BUDGET_USD` per run, and sizes each Claude call so a single move can't overshoot it.
@@ -38,6 +39,7 @@ Pick an engine (or Human) for White and Black, then press **Start**. Without key
 | `JEV_MODEL` | `jev-latest` | Jev model id |
 | `MOCK` | | `1` = every engine plays random legal moves, no API calls |
 | `PORT` | `3000` | Local port (the server only listens on `127.0.0.1`) |
+| `STOCKFISH_PATH` | `stockfish` | Native Stockfish binary for *Eval: Native*; found on `PATH` by default |
 
 ## How it works
 
@@ -49,6 +51,7 @@ browser (public/app.js)            server.js                         engines
 
 - The browser owns the game loop and sends the start position (FEN) and the full move history each turn. The server rebuilds the position from them, so legality is always decided server-side, and the move an engine returns is checked against the legal moves before it is accepted. Human moves never reach the server on their own; they arrive in the history of the next engine request.
 - **Claude** (`claude.js`) gets the position as FEN, a text diagram, the moves so far and the list of legal moves. Its answer is constrained by structured outputs: a JSON schema whose `move` field is an enum of the legal moves.
+- **Analysis** never touches a paid API. Each position gets a short Stockfish search (300 ms native, 400 ms in the browser) for the two best lines. A move's grade comes from the mover's drop in win chance (lichess's centipawn-to-win% curve and thresholds, chess.com's names). It is "Great" when it is the engine's choice and the second-best move is at least 15 points worse.
 - **Jev** (`jev.js`) is a decision model, not a text generator: it picks one option from a `choice` question whose options are the legal moves. It doesn't search ahead, so each option carries precomputed facts (captures, check, mate, piece safety, likely material result, threats, development, repetition, mate-in-one danger). Option order is shuffled each turn because Jev favors early options.
 
 ### Cost
@@ -83,7 +86,12 @@ npm test   # node:test: rules, custom start positions, request validation, secur
 | `jev.js` | TypeSafe Jev engine: option facts, request, retries |
 | `public/app.js` | UI: game loop, board, human input, move browsing, settings (vanilla ES modules, no build step) |
 | `public/sound.js` | Move sounds synthesized with WebAudio |
+| `public/uci.js` | UCI client shared by both Stockfish backends |
+| `analysis.js` | Optional native Stockfish process behind `POST /api/eval` |
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The chess piece images in `public/pieces.css` are the cburnett set by Colin M.L. Burnett, licensed GPLv2+ (as listed in [lichess's COPYING.md](https://github.com/lichess-org/lila/blob/master/COPYING.md)) and not covered by the MIT license.
+MIT, see [LICENSE](LICENSE). Exceptions:
+
+- `public/vendor/stockfish/` holds the lite single-threaded build of [Stockfish.js 19.0.1](https://github.com/nmrugg/stockfish.js/releases/tag/v19.0.1), licensed GPLv3 ([COPYING.txt](public/vendor/stockfish/COPYING.txt)); its source is at that link. Native Stockfish is not bundled: you install it yourself.
+- The chess piece images in `public/pieces.css` are the cburnett set by Colin M.L. Burnett, licensed GPLv2+ (as listed in [lichess's COPYING.md](https://github.com/lichess-org/lila/blob/master/COPYING.md)) and not covered by the MIT license.

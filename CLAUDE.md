@@ -24,6 +24,8 @@ npm test           # node:test, never touches a paid API
 | `server.js` | HTTP server, Host/Origin/CSP checks, static files, `/api/config`, `/api/move`, budget, move queue |
 | `claude.js` | Model discovery from the Models API, settings validation, prompt, structured output, cost |
 | `jev.js` | Jev option facts per legal move, request, retries |
+| `analysis.js` | Optional native Stockfish (one UCI process) behind `POST /api/eval` |
+| `public/uci.js` | UCI parser shared by native Stockfish (server) and the WASM worker (browser) |
 | `errors.js` | `httpError(status, message, extra)`, the only error shape the server sends |
 | `public/app.js` | Game loop, board rendering and animation, human input, move browsing, FEN/PGN load, settings UI, PGN |
 | `public/sound.js` | WebAudio move sounds and the mute setting |
@@ -47,5 +49,6 @@ npm test           # node:test, never touches a paid API
 ## Gotchas
 
 - `.env` holds the API keys and is gitignored; never print or commit it.
-- The cburnett pieces in `public/pieces.css` are GPLv2+, not MIT; keep the README credit.
+- The cburnett pieces in `public/pieces.css` are GPLv2+ and `public/vendor/stockfish/` is GPLv3, not MIT; keep the README credits and `COPYING.txt`. Native Stockfish is never bundled.
+- The CSP allows `'wasm-unsafe-eval'` only for the Stockfish worker; `.wasm` must be served as plain `application/wasm` (no charset).
 - Prices in `claude.js` carry a "checked" date; update it when you change them.
