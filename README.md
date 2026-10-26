@@ -65,8 +65,9 @@ Adaptive thinking decides for itself whether to think. In our tests the opening 
 The server is meant for your own machine. It binds to `127.0.0.1`, and because every move spends money it only accepts API calls from its own page:
 
 - requests must carry a `Host` of `localhost:PORT` or `127.0.0.1:PORT` (blocks DNS rebinding),
-- cross-origin `Origin`s are refused, and `POST /api/move` requires `Content-Type: application/json` (other sites can't send that without a CORS preflight, which is never granted),
+- cross-origin `Origin`s are refused, and every `POST` requires `Content-Type: application/json` (other sites can't send that without a CORS preflight, which is never granted),
 - moves run one at a time, so parallel requests can't race the budget,
+- positions are validated before any engine sees them, native Stockfish only ever receives a normalized FEN, and at most 4 analysis requests may wait at once,
 - responses carry a strict Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 
 Keep your keys in `.env` (gitignored).
